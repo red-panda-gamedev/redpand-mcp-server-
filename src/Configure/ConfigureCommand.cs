@@ -16,7 +16,7 @@ using com.IvanMurzak.McpPlugin.AgentConfig;  // AiAgentConfigurator(Registry|Set
 using com.IvanMurzak.McpPlugin.Common;       // Consts (+ nested Consts.MCP.Server.AuthOption)
 using com.IvanMurzak.McpPlugin.Common.Utils; // ArgsUtils
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Configure
+namespace com.RedPand.MCP.Server.Configure
 {
     /// <summary>
     /// Terminal subcommand: <c>gamedev-mcp-server configure --agent &lt;id&gt; [--url &lt;url&gt;]

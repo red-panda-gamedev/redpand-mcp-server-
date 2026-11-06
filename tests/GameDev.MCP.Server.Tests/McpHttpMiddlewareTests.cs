@@ -14,7 +14,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Http;
+using com.RedPand.MCP.Server.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,7 +22,7 @@ using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     public class McpHttpMiddlewareTests
     {

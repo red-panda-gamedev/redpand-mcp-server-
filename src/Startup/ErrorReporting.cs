@@ -16,7 +16,7 @@ using Sentry;
 using Sentry.AspNetCore;
 using Sentry.Extensibility;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Startup
+namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>
     /// Opt-in crash reporting to a Sentry-compatible endpoint (GlitchTip for ai-game.dev).

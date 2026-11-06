@@ -11,9 +11,9 @@
 using System;
 using System.Text.Json;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Configure;
-using com.IvanMurzak.GameDev.MCP.Server.Http;
-using com.IvanMurzak.GameDev.MCP.Server.Startup;
+using com.RedPand.MCP.Server.Configure;
+using com.RedPand.MCP.Server.Http;
+using com.RedPand.MCP.Server.Startup;
 using com.IvanMurzak.McpPlugin.Common;
 using com.IvanMurzak.McpPlugin.Common.Utils;
 using com.IvanMurzak.McpPlugin.Server;
@@ -29,7 +29,7 @@ using NLog;
 using NLog.Extensions.Logging;
 using StackExchange.Redis;
 
-namespace com.IvanMurzak.GameDev.MCP.Server
+namespace com.RedPand.MCP.Server
 {
     public class Program
     {

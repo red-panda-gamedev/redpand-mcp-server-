@@ -7,7 +7,7 @@
 # └───────────────────────────────────────────────────────────────────────────┘
 
 # Packs and pushes the server as a global dotnet tool to NuGet
-# (com.IvanMurzak.GameDev.MCP.Server, command `gamedev-mcp-server`). Mirrors the
+# (com.RedPand.MCP.Server, command `gamedev-mcp-server`). Mirrors the
 # engine/library repos' deploy.yml NuGet job (Trusted Publishing, no stored API
 # key). Reusable CHILD of release.yml ONLY (workflow_call) — like
 # deploy_docker.yml / deploy_server_executables.yml it has no release / dispatch
@@ -66,17 +66,17 @@ jobs:
           dotnet-version: "9.0.x"
 
       - name: Restore
-        run: dotnet restore com.IvanMurzak.GameDev.MCP.Server.csproj
+        run: dotnet restore com.RedPand.MCP.Server.csproj
 
       - name: Build (Release)
-        run: dotnet build com.IvanMurzak.GameDev.MCP.Server.csproj -c Release --no-restore
+        run: dotnet build com.RedPand.MCP.Server.csproj -c Release --no-restore
 
       - name: Pack (global dotnet tool)
-        run: dotnet pack com.IvanMurzak.GameDev.MCP.Server.csproj --no-build --configuration Release --output ./packages
+        run: dotnet pack com.RedPand.MCP.Server.csproj --no-build --configuration Release --output ./packages
 
       - name: Check packed .nupkg matches the version
         run: |
-          nupkg_file="./packages/com.IvanMurzak.GameDev.MCP.Server.${{ steps.version.outputs.version }}.nupkg"
+          nupkg_file="./packages/com.RedPand.MCP.Server.${{ steps.version.outputs.version }}.nupkg"
           if [ ! -f "$nupkg_file" ]; then
             echo "Error: expected .nupkg not found: $nupkg_file"
             echo "The csproj <Version> must match the release version."
@@ -95,7 +95,7 @@ jobs:
       - name: Publish to NuGet
         if: ${{ !inputs.dry_run }}
         run: |
-          nupkg_file="./packages/com.IvanMurzak.GameDev.MCP.Server.${{ steps.version.outputs.version }}.nupkg"
+          nupkg_file="./packages/com.RedPand.MCP.Server.${{ steps.version.outputs.version }}.nupkg"
           if [ ! -f "$nupkg_file" ]; then
             echo "Error: expected .nupkg not found: $nupkg_file"
             echo "The csproj <Version> must match the release tag (minus the 'v' prefix)."

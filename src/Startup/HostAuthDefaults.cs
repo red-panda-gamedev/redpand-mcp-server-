@@ -12,7 +12,7 @@ using System;
 using com.IvanMurzak.McpPlugin.Common;
 using com.IvanMurzak.McpPlugin.Common.Utils;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Startup
+namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>
     /// Host-level policy for the transport-conditional authentication default introduced with the

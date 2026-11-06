@@ -10,7 +10,7 @@
 
 using System;
 using System.Collections.Generic;
-using com.IvanMurzak.GameDev.MCP.Server.Startup;
+using com.RedPand.MCP.Server.Startup;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Sentry;
@@ -18,7 +18,7 @@ using Sentry.AspNetCore;
 using Sentry.Extensibility;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     public class ErrorReportingTests
     {

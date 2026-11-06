@@ -11,11 +11,11 @@
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Tests.Harness;
+using com.RedPand.MCP.Server.Tests.Harness;
 using com.IvanMurzak.McpPlugin.Common.Model;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// A plugin tool's "Visible" flag (McpPlugin's renamed "Enabled") only decides whether tools/list shows it to an MCP

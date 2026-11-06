@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Matches the TFM of the host project (com.IvanMurzak.GameDev.MCP.Server.csproj). -->
+    <!-- Matches the TFM of the host project (com.RedPand.MCP.Server.csproj). -->
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <IsPackable>false</IsPackable>
-    <RootNamespace>com.IvanMurzak.GameDev.MCP.Server.Tests</RootNamespace>
+    <RootNamespace>com.RedPand.MCP.Server.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,7 +21,7 @@
          tests use (DefaultHttpContext, InitializeRequestParams, IDistributedCache) flow
          in transitively through this reference, so no explicit FrameworkReference or
          extra package pins are needed. -->
-    <ProjectReference Include="..\..\com.IvanMurzak.GameDev.MCP.Server.csproj" />
+    <ProjectReference Include="..\..\com.RedPand.MCP.Server.csproj" />
   </ItemGroup>
 
 </Project>

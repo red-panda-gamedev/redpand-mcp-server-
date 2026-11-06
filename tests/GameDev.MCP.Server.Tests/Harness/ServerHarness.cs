@@ -23,7 +23,7 @@ using com.IvanMurzak.McpPlugin.Common.Utils;
 using Microsoft.AspNetCore.Builder;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests.Harness
+namespace com.RedPand.MCP.Server.Tests.Harness
 {
     /// <summary>
     /// Server tests that run the real host (<see cref="Program.BuildApp"/>) share the library's static

@@ -9,11 +9,11 @@
 */
 
 using System;
-using com.IvanMurzak.GameDev.MCP.Server.Startup;
+using com.RedPand.MCP.Server.Startup;
 using com.IvanMurzak.McpPlugin.Common;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// Covers the transport-conditional auth default policy (mcp-authorize, design 02 §"modes"):

@@ -188,13 +188,13 @@ RECIPES = {
         "slug": "IvanMurzak/GameDev-MCP-Server",
         "ecosystem": "dotnet",
         "kind": "repo",
-        "build": "dotnet build com.IvanMurzak.GameDev.MCP.Server.csproj -c Release -p:Version={ws_version}",
+        "build": "dotnet build com.RedPand.MCP.Server.csproj -c Release -p:Version={ws_version}",
         "pack": [
-            "dotnet pack com.IvanMurzak.GameDev.MCP.Server.csproj --no-build --configuration Release --output {feed} -p:Version={ws_version}",
-            "dotnet publish com.IvanMurzak.GameDev.MCP.Server.csproj -c Release -r {rid} --self-contained true -p:PublishSingleFile=true -o {server_out}/{rid} -p:Version={ws_version}",
+            "dotnet pack com.RedPand.MCP.Server.csproj --no-build --configuration Release --output {feed} -p:Version={ws_version}",
+            "dotnet publish com.RedPand.MCP.Server.csproj -c Release -r {rid} --self-contained true -p:PublishSingleFile=true -o {server_out}/{rid} -p:Version={ws_version}",
         ],
         "artifacts": {
-            "nupkg": {"kind": "nupkg", "id": "com.IvanMurzak.GameDev.MCP.Server"},
+            "nupkg": {"kind": "nupkg", "id": "com.RedPand.MCP.Server"},
             "binary": {
                 "kind": "server-binary", "id": "gamedev-mcp-server",
                 "rids": ["win-x64", "linux-x64", "osx-arm64"],
@@ -203,15 +203,15 @@ RECIPES = {
         "consumes": [
             {
                 "ref": "reflectornet/nupkg", "node": "reflectornet", "artifact": "nupkg",
-                "mode": "nuget", "pins": ["com.IvanMurzak.GameDev.MCP.Server.csproj"],
+                "mode": "nuget", "pins": ["com.RedPand.MCP.Server.csproj"],
             },
             {
                 "ref": "mcp-plugin-dotnet/server", "node": "mcp-plugin-dotnet", "artifact": "server",
-                "mode": "nuget", "pins": ["com.IvanMurzak.GameDev.MCP.Server.csproj"],
+                "mode": "nuget", "pins": ["com.RedPand.MCP.Server.csproj"],
             },
             {
                 "ref": "mcp-plugin-dotnet/mcpplugin", "node": "mcp-plugin-dotnet", "artifact": "mcpplugin",
-                "mode": "nuget", "pins": ["com.IvanMurzak.GameDev.MCP.Server.csproj"],
+                "mode": "nuget", "pins": ["com.RedPand.MCP.Server.csproj"],
             },
         ],
     },

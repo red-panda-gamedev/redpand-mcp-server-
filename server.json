@@ -10,7 +10,7 @@
   "packages": [
     {
       "registryType": "nuget",
-      "identifier": "com.IvanMurzak.GameDev.MCP.Server",
+      "identifier": "com.RedPand.MCP.Server",
       "version": "9.4.0",
       "transport": {
         "type": "stdio"

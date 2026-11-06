@@ -5,14 +5,14 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>com.IvanMurzak.GameDev.MCP.Server</RootNamespace>
+    <RootNamespace>com.RedPand.MCP.Server</RootNamespace>
     <AssemblyName>gamedev-mcp-server</AssemblyName>
 
     <!-- NuGet Package Properties -->
     <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>gamedev-mcp-server</ToolCommandName>
-    <PackageId>com.IvanMurzak.GameDev.MCP.Server</PackageId>
+    <PackageId>com.RedPand.MCP.Server</PackageId>
     <Version>9.4.0</Version>
     <Authors>Ivan Murzak</Authors>
     <Company>Ivan Murzak</Company>

@@ -2,7 +2,7 @@
 
   <h1>✨ AI Game Developer — <i>GameDev MCP Server</i></h1>
 
-[![NuGet](https://img.shields.io/nuget/v/com.IvanMurzak.GameDev.MCP.Server?label=NuGet&labelColor=333A41)](https://www.nuget.org/packages/com.IvanMurzak.GameDev.MCP.Server/)
+[![NuGet](https://img.shields.io/nuget/v/com.RedPand.MCP.Server?label=NuGet&labelColor=333A41)](https://www.nuget.org/packages/com.RedPand.MCP.Server/)
 [![MCP](https://badge.mcpx.dev 'MCP Server')](https://modelcontextprotocol.io/introduction)
 [![Unreal](https://img.shields.io/badge/Unreal-Engine-0E1128?style=flat&logo=unrealengine&logoColor=white&labelColor=333A41 'Unreal-MCP plugin')](https://github.com/IvanMurzak/Unreal-MCP)
 [![Unity](https://img.shields.io/badge/Unity-Engine-000000?style=flat&logo=unity&logoColor=white&labelColor=333A41 'Unity-MCP plugin')](https://github.com/IvanMurzak/Unity-MCP)
@@ -86,15 +86,15 @@ docker run -i --rm -p 8080:8080 aigamedeveloper/mcp-server
 ### dotnet tool
 
 ```bash
-dotnet tool install --global com.IvanMurzak.GameDev.MCP.Server
+dotnet tool install --global com.RedPand.MCP.Server
 gamedev-mcp-server --port 8080
 ```
 
 ### Build from source
 
 ```bash
-dotnet build com.IvanMurzak.GameDev.MCP.Server.csproj
-dotnet run --project com.IvanMurzak.GameDev.MCP.Server.csproj -- --client-transport stdio --port 8080
+dotnet build com.RedPand.MCP.Server.csproj
+dotnet run --project com.RedPand.MCP.Server.csproj -- --client-transport stdio --port 8080
 ```
 
 Cross-platform self-contained executables for all 7 RIDs: `python build/build_all.py` (Python 3.9+, any OS; pass RIDs to build only some). Outputs land in `publish/<rid>/` and are zipped as `gamedev-mcp-server-<rid>.zip` (skip zipping with `--no-zip`; zip existing outputs with `--zip-only`).

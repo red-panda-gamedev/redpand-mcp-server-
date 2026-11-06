@@ -1,6 +1,6 @@
 # AI Game Developer — GameDev MCP Server
 
-[![NuGet](https://img.shields.io/nuget/v/com.IvanMurzak.GameDev.MCP.Server?label=NuGet&labelColor=333A41)](https://www.nuget.org/packages/com.IvanMurzak.GameDev.MCP.Server/)
+[![NuGet](https://img.shields.io/nuget/v/com.RedPand.MCP.Server?label=NuGet&labelColor=333A41)](https://www.nuget.org/packages/com.RedPand.MCP.Server/)
 [![Docker Image](https://img.shields.io/docker/image-size/aigamedeveloper/mcp-server/latest?label=Docker%20Image&logo=docker&logoColor=white&labelColor=333A41)](https://hub.docker.com/r/aigamedeveloper/mcp-server)
 [![License](https://img.shields.io/github/license/IvanMurzak/GameDev-MCP-Server?label=License&labelColor=333A41)](https://github.com/IvanMurzak/GameDev-MCP-Server/blob/main/LICENSE)
 
@@ -25,7 +25,7 @@ There is **no engine-specific code** in this package — one server binary serve
 ### dotnet tool (this package)
 
 ```bash
-dotnet tool install --global com.IvanMurzak.GameDev.MCP.Server
+dotnet tool install --global com.RedPand.MCP.Server
 gamedev-mcp-server --port 8080
 ```
 

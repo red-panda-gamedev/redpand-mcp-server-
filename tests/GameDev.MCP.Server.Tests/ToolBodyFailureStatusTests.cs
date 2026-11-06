@@ -10,14 +10,14 @@
 
 using System;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Tests.Harness;
+using com.RedPand.MCP.Server.Tests.Harness;
 using com.IvanMurzak.McpPlugin;
 using com.IvanMurzak.McpPlugin.Common.Model;
 using com.IvanMurzak.ReflectorNet;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// A tool body that throws, through this host's direct endpoint <c>POST /api/tools/{name}</c>: the response is

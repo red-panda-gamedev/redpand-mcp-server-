@@ -6,16 +6,16 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
 # Copy main project file
-COPY ["com.IvanMurzak.GameDev.MCP.Server.csproj", "."]
+COPY ["com.RedPand.MCP.Server.csproj", "."]
 
 # Restore dependencies
-RUN dotnet restore "com.IvanMurzak.GameDev.MCP.Server.csproj"
+RUN dotnet restore "com.RedPand.MCP.Server.csproj"
 
 # Copy the rest of the source code
 COPY . .
 
 # Publish
-RUN dotnet publish "com.IvanMurzak.GameDev.MCP.Server.csproj" -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish "com.RedPand.MCP.Server.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 # Pre-create the writable logs dir so the non-root runtime user can write NLog
 # output — the chiseled rootfs has no shell to mkdir at runtime.

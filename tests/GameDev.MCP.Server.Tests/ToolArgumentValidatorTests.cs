@@ -14,7 +14,7 @@ using System.Text.Json;
 using com.IvanMurzak.McpPlugin.Server.Tools;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     public class ToolArgumentValidatorTests
     {

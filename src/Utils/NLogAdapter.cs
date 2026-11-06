@@ -12,7 +12,7 @@ using System;
 using Microsoft.Extensions.Logging;
 using NLog;
 
-namespace com.IvanMurzak.GameDev.MCP.Server
+namespace com.RedPand.MCP.Server
 {
     internal class NLogAdapter : Microsoft.Extensions.Logging.ILogger
     {

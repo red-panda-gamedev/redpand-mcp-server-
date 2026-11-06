@@ -11,7 +11,7 @@ tool whose dependencies nuget.org cannot satisfy. This guard runs as the FIRST s
 `release.yml` and fails the run before anything is built or published while any such pin is left.
 
 What it checks (everything the release builds or ships: the 7 executables, the NuGet tool and the
-Docker image all come from `com.IvanMurzak.GameDev.MCP.Server.csproj`):
+Docker image all come from `com.RedPand.MCP.Server.csproj`):
   * every NuGet pin of that project and the `Directory.Build.props` / `Directory.Packages.props` /
     `.props` / `.targets` / `.nuspec` files that feed it, MSBuild `$(Property)` versions resolved:
     a pre-release version (any `-` suffix) or a version not listed on nuget.org fails;
@@ -453,7 +453,7 @@ def scan_dockerfile(path: Path, root: Path) -> list[Problem]:
 
 # --- this repository --------------------------------------------------------------------------
 
-HOST_PROJECT = "com.IvanMurzak.GameDev.MCP.Server.csproj"
+HOST_PROJECT = "com.RedPand.MCP.Server.csproj"
 
 
 def collect(root: Path) -> tuple[list[Pin], list[Problem]]:

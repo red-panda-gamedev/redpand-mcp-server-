@@ -18,7 +18,7 @@ using com.IvanMurzak.McpPlugin.Server.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Http
+namespace com.RedPand.MCP.Server.Http
 {
     /// <summary>
     /// Logs every 4xx answer (except 401) of this server with the start of its body.

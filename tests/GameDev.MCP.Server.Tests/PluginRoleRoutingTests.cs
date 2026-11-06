@@ -10,12 +10,12 @@
 
 using System;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Tests.Harness;
+using com.RedPand.MCP.Server.Tests.Harness;
 using com.IvanMurzak.McpPlugin.Common;
 using com.IvanMurzak.McpPlugin.Server.Strategy;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// auth=none with an editor and a game (runtime) plugin connected at once (wave-4/5 finding: the game

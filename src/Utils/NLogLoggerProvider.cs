@@ -10,7 +10,7 @@
 
 using Microsoft.Extensions.Logging;
 
-namespace com.IvanMurzak.GameDev.MCP.Server
+namespace com.RedPand.MCP.Server
 {
     internal class NLogLoggerProvider : ILoggerProvider
     {

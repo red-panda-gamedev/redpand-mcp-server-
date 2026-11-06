@@ -22,7 +22,7 @@ using ModelContextProtocol;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
 
-namespace com.IvanMurzak.GameDev.MCP.Server
+namespace com.RedPand.MCP.Server
 {
     /// <summary>
     /// Persists MCP session <see cref="InitializeRequestParams"/> to a shared

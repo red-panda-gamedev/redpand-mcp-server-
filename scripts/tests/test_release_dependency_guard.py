@@ -15,7 +15,7 @@ guard = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = guard  # dataclasses resolve annotations through sys.modules
 _spec.loader.exec_module(guard)
 
-HOST = "com.IvanMurzak.GameDev.MCP.Server.csproj"
+HOST = "com.RedPand.MCP.Server.csproj"
 PUBLISHED = {
     "com.ivanmurzak.reflectornet": ["5.4.0", "5.5.0"],
     "com.ivanmurzak.mcpplugin": ["8.13.0", "8.13.1"],
@@ -26,18 +26,18 @@ PUBLISHED = {
 CLEAN_DOCKERFILE = """\
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
-COPY ["com.IvanMurzak.GameDev.MCP.Server.csproj", "."]
-RUN dotnet restore "com.IvanMurzak.GameDev.MCP.Server.csproj"
+COPY ["com.RedPand.MCP.Server.csproj", "."]
+RUN dotnet restore "com.RedPand.MCP.Server.csproj"
 COPY . .
-RUN dotnet publish "com.IvanMurzak.GameDev.MCP.Server.csproj" -c Release -o /app/publish
+RUN dotnet publish "com.RedPand.MCP.Server.csproj" -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 COPY --from=build --chown=1654:1654 /app/publish .
 """
 
 # The shape of main while McpPlugin is integrated unreleased (8.14.0-dev.<sha> from prerelease-packages/).
 PRERELEASE_DOCKERFILE = CLEAN_DOCKERFILE.replace(
-    'COPY ["com.IvanMurzak.GameDev.MCP.Server.csproj", "."]',
-    'COPY ["com.IvanMurzak.GameDev.MCP.Server.csproj", "Directory.Build.props", "."]\n'
+    'COPY ["com.RedPand.MCP.Server.csproj", "."]',
+    'COPY ["com.RedPand.MCP.Server.csproj", "Directory.Build.props", "."]\n'
     'COPY ["prerelease-packages/", "prerelease-packages/"]')
 
 FEED_PROPS = """\

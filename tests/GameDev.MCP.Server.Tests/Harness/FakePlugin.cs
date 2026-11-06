@@ -20,7 +20,7 @@ using com.IvanMurzak.ReflectorNet;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests.Harness
+namespace com.RedPand.MCP.Server.Tests.Harness
 {
     /// <summary>
     /// A minimal engine plugin over a real SignalR connection: the version handshake, a tool list and

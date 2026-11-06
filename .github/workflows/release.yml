@@ -92,10 +92,10 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          version="$(grep -oP '<Version>\K[^<]+' com.IvanMurzak.GameDev.MCP.Server.csproj || true)"
+          version="$(grep -oP '<Version>\K[^<]+' com.RedPand.MCP.Server.csproj || true)"
           count="$(printf '%s\n' "$version" | grep -c . || true)"
           if [ "$count" != "1" ]; then
-            echo "::error::Expected exactly one <Version> in com.IvanMurzak.GameDev.MCP.Server.csproj, found $count."
+            echo "::error::Expected exactly one <Version> in com.RedPand.MCP.Server.csproj, found $count."
             exit 1
           fi
           if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
@@ -271,9 +271,9 @@ jobs:
           while :; do
             body="$(curl -fsS --max-time 30 "$url" 2>/dev/null)" && \
               python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in json.loads(sys.argv[2]).get("versions", []) else 1)' "$VERSION" "$body" && {
-                echo "com.IvanMurzak.GameDev.MCP.Server $VERSION is on the NuGet flat-container index."; exit 0; }
+                echo "com.RedPand.MCP.Server $VERSION is on the NuGet flat-container index."; exit 0; }
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::com.IvanMurzak.GameDev.MCP.Server $VERSION not visible at $url within 15 min."
+              echo "::error::com.RedPand.MCP.Server $VERSION not visible at $url within 15 min."
               exit 1
             fi
             echo "not indexed yet; retrying in 30s"; sleep 30

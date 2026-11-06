@@ -14,7 +14,7 @@ using com.IvanMurzak.McpPlugin.Common.Utils;      // DataArguments
 using com.IvanMurzak.McpPlugin.Server.Auth.OAuth; // UrlNormalization
 using com.IvanMurzak.McpPlugin.Server.Security;    // OriginValidationOptions
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Startup
+namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>
     /// Host surface for an <b>additional, configurable Origin allow-list</b> (carry-forward from b2 /

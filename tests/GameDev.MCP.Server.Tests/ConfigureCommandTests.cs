@@ -11,12 +11,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using com.IvanMurzak.GameDev.MCP.Server.Configure;
+using com.RedPand.MCP.Server.Configure;
 using com.IvanMurzak.McpPlugin.AgentConfig;
 using com.IvanMurzak.McpPlugin.Common;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// Covers the `configure --agent &lt;id&gt;` subcommand (design 06 D12): it resolves a configurator

@@ -14,7 +14,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Http
+namespace com.RedPand.MCP.Server.Http
 {
     /// <summary>
     /// Answers an SSE resumption whose cached stream data has expired with a 400 instead of a 500.

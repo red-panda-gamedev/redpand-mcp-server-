@@ -9,11 +9,11 @@
 */
 
 using System.Linq;
-using com.IvanMurzak.GameDev.MCP.Server.Startup;
+using com.RedPand.MCP.Server.Startup;
 using com.IvanMurzak.McpPlugin.Common.Utils;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
     /// Covers the configurable Origin allow-list host surface (b2 carry-forward): parsing +

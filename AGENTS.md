@@ -5,7 +5,7 @@ plugins. Thin host (`src/Program.cs`) over the NuGet packages `com.IvanMurzak.Mc
 `com.IvanMurzak.ReflectorNet` — ALL real server logic lives in those packages; this repo contains no
 engine-specific code. Distributed as standalone executables (`gamedev-mcp-server-<rid>.zip`), a
 Docker image (`aigamedeveloper/mcp-server`), and a global dotnet tool on NuGet
-(`com.IvanMurzak.GameDev.MCP.Server`, command `gamedev-mcp-server`).
+(`com.RedPand.MCP.Server`, command `gamedev-mcp-server`).
 
 **NOT AI-Game-Dev-Server (the ai-game.dev cloud LLM/billing proxy) — this is the local MCP
 stdio/http proxy host shared by the engine plugins.**
@@ -13,8 +13,8 @@ stdio/http proxy host shared by the engine plugins.**
 ## Build / run
 
 ```bash
-dotnet build com.IvanMurzak.GameDev.MCP.Server.csproj
-dotnet run --project com.IvanMurzak.GameDev.MCP.Server.csproj -- --client-transport stdio --port 8080
+dotnet build com.RedPand.MCP.Server.csproj
+dotnet run --project com.RedPand.MCP.Server.csproj -- --client-transport stdio --port 8080
 ```
 
 - All-platform self-contained publish: `python build/build_all.py [Debug|Release] [rid ...]` (stdlib

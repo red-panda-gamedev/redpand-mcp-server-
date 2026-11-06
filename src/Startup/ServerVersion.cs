@@ -10,7 +10,7 @@
 
 using System.Reflection;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Startup
+namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>The server's own version, as written by <c>configure</c> and reported to error tracking.</summary>
     internal static class ServerVersion

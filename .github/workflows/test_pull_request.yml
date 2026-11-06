@@ -133,7 +133,7 @@ jobs:
           try:
               ctx = cf.build_context(types.SimpleNamespace(node="gamedev-mcp-server", job="build", lock=None, lock_file=None, checkout=None, runner_temp=None))
               rows = cf.nuget_rows_for_node(ctx, ctx.node)
-              csproj = open("com.IvanMurzak.GameDev.MCP.Server.csproj", encoding="utf-8-sig").read()
+              csproj = open("com.RedPand.MCP.Server.csproj", encoding="utf-8-sig").read()
               pins = dict(re.findall(r'<PackageReference\s+Include="([^"]+)"\s+Version="([^"]+)"', csproj))
               drift = []
               for r in rows:
@@ -157,10 +157,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Restore
-        run: dotnet restore com.IvanMurzak.GameDev.MCP.Server.csproj
+        run: dotnet restore com.RedPand.MCP.Server.csproj
 
       - name: Build (Release)
-        run: dotnet build com.IvanMurzak.GameDev.MCP.Server.csproj -c Release --no-restore
+        run: dotnet build com.RedPand.MCP.Server.csproj -c Release --no-restore
 
       - name: Test
         run: dotnet test tests/GameDev.MCP.Server.Tests/GameDev.MCP.Server.Tests.csproj -c Release

@@ -13,11 +13,11 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using com.IvanMurzak.GameDev.MCP.Server.Tests.Harness;
+using com.RedPand.MCP.Server.Tests.Harness;
 using com.IvanMurzak.McpPlugin.Common.Model;
 using Xunit;
 
-namespace com.IvanMurzak.GameDev.MCP.Server.Tests
+namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>Tool-call arguments, deadline and plugin reloads (wave-4/5 findings 2-5).</summary>
     [Collection(LiveServerCollection.Name)]
