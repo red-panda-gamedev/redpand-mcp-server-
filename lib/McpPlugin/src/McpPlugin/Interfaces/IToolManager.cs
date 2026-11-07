@@ -28,6 +28,12 @@ namespace com.RedPand.MCP.Plugin
         /// conversion and results; null = ReflectorNet. Managers that do not support bindings ignore it.
         /// </summary>
         IToolBinding? ToolBinding { get => null; set { } }
+
+        /// <summary>
+        /// Asked before any tool runs, however it was called. A text refuses the call: the caller gets it as the tool's
+        /// error and the tool does not run; null lets it run. Managers that do not support it ignore it.
+        /// </summary>
+        Func<IRunTool, string?>? RunGate { get => null; set { } }
         
         /// <summary>
         /// Gets the total token count for all visible tools (the ones listed in <c>tools/list</c>).

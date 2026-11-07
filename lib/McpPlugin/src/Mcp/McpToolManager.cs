@@ -86,6 +86,9 @@ namespace com.RedPand.MCP.Plugin
         [Obsolete("Renamed to VisibleToolsSkillMetadataTokenCount" + VisibilityRename.Note)]
         public int EnabledToolsSkillMetadataTokenCount => VisibleToolsSkillMetadataTokenCount;
 
+        /// <inheritdoc cref="IToolManager.RunGate"/>
+        public Func<IRunTool, string?>? RunGate { get; set; }
+
         private IToolBinding? _toolBinding;
 
         /// <summary>
@@ -179,6 +182,15 @@ namespace com.RedPand.MCP.Plugin
                     .Log(_logger);
             try
             {
+                var refusal = RunGate?.Invoke(runner);
+                if (refusal != null)
+                {
+                    _logger.LogInformation("Tool '{0}' refused: {1}", data.Name, refusal);
+                    return ResponseCallTool.Error(refusal, ResponseErrorKind.BadRequest, 403)
+                        .SetRequestID(data.RequestID)
+                        .Pack(data.RequestID);
+                }
+
                 if (_logger.IsEnabled(LogLevel.Information))
                 {
                     var message = data.Arguments == null
