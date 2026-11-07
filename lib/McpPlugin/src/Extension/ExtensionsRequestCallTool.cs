@@ -1,0 +1,32 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+using System.Collections.Generic;
+using System.Text.Json;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.IvanMurzak.ReflectorNet;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public static class ExtensionsRequestCallTool
+    {
+        public static RequestCallTool SetName(this RequestCallTool data, string name)
+        {
+            data.Name = name;
+            return data;
+        }
+        // public static RequestCallTool SetOrAddParameter(this RequestCallTool data, string name, object? value)
+        // {
+        //     data.Arguments ??= value == null
+        //         ? new Dictionary<string, JsonElement>()
+        //         : new Dictionary<string, JsonElement>() { [name] = value.ToJsonElement(McpPlugin.Instance?.McpRunner.Reflector) };
+        //     return data;
+        // }
+    }
+}

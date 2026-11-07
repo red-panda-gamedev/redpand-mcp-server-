@@ -12,8 +12,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using com.RedPand.MCP.Server.Configure;
-using com.IvanMurzak.McpPlugin.AgentConfig;
-using com.IvanMurzak.McpPlugin.Common;
+using com.RedPand.MCP.Plugin.AgentConfig;
+using com.RedPand.MCP.Plugin.Common;
 using Xunit;
 
 namespace com.RedPand.MCP.Server.Tests

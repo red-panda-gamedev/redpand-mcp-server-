@@ -11,8 +11,8 @@
 using System;
 using System.Threading.Tasks;
 using com.RedPand.MCP.Server.Tests.Harness;
-using com.IvanMurzak.McpPlugin;
-using com.IvanMurzak.McpPlugin.Common.Model;
+using com.RedPand.MCP.Plugin;
+using com.RedPand.MCP.Plugin.Common.Model;
 using com.IvanMurzak.ReflectorNet;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;

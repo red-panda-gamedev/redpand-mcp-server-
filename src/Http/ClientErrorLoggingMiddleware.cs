@@ -13,8 +13,8 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using com.IvanMurzak.McpPlugin.Common;
-using com.IvanMurzak.McpPlugin.Server.Auth;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Server.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 

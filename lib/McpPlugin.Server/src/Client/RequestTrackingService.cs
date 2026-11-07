@@ -1,0 +1,235 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.RedPand.MCP.Plugin.Common.Utils;
+using Microsoft.Extensions.Logging;
+using R3;
+
+namespace com.RedPand.MCP.Plugin.Server
+{
+    public interface IRequestTrackingService
+    {
+        Task<ResponseCallTool> TrackRequestAsync(
+            string requestId,
+            Func<Task<ResponseCallTool>> executeRequest,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default);
+        void CompleteRequest(ResponseCallTool response);
+    }
+
+    public class RequestTrackingService : IRequestTrackingService, IDisposable
+    {
+        readonly ILogger<RequestTrackingService> _logger;
+        readonly ConcurrentDictionary<string, PendingRequest> _pendingRequests = new();
+        readonly CompositeDisposable _disposables = new();
+
+        public RequestTrackingService(ILogger<RequestTrackingService> logger)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger.LogTrace("RequestTrackingService initialized");
+        }
+
+        public async Task<ResponseCallTool> TrackRequestAsync(
+            string requestId,
+            Func<Task<ResponseCallTool>> executeRequest,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(requestId))
+                throw new ArgumentException("RequestId cannot be null or empty", nameof(requestId));
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _logger.LogTrace("Tracking request: {RequestId} with timeout: {timeout}", requestId, timeout);
+
+            var pendingRequest = new PendingRequest(requestId, timeout);
+            _pendingRequests[requestId] = pendingRequest;
+
+            try
+            {
+                var initialResponse = await executeRequest();
+                if (initialResponse.Status != ResponseStatus.Processing)
+                {
+                    _logger.LogTrace("Request {RequestId} completed immediately", requestId);
+                    return initialResponse;
+                }
+
+                _logger.LogTrace("Request {RequestId} processing: {Message}", requestId, initialResponse);
+
+                // The deadline for a deferred completion starts now, not when the call was sent.
+                pendingRequest.StartDeadline();
+                var finalResult = await pendingRequest.WaitForCompletion(cancellationToken);
+                return finalResult;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("Request {RequestId} cancelled by the caller", requestId);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing request {RequestId}", requestId);
+                throw;
+            }
+            finally
+            {
+                _pendingRequests.TryRemove(requestId, out _);
+                pendingRequest.Dispose();
+            }
+        }
+
+        public void CompleteRequest(ResponseCallTool response)
+        {
+            if (string.IsNullOrEmpty(response?.RequestID))
+            {
+                _logger.LogError("Attempted to complete request with null or empty RequestID\n{Json}",
+                    response.ToPrettyJson());
+                return;
+            }
+
+            if (_pendingRequests.TryRemove(response.RequestID, out var pendingRequest))
+            {
+                _logger.LogTrace("Completing tracked request: {RequestID}", response.RequestID);
+                if (pendingRequest is PendingRequest typedPendingRequest)
+                {
+                    typedPendingRequest.Complete(response);
+                }
+                else
+                {
+                    _logger.LogWarning("Type mismatch when completing request {RequestID}. Expected {ExpectedType}, got {ActualType}",
+                        response.RequestID, nameof(ResponseData), pendingRequest.GetType().Name);
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Attempted to complete request {RequestID} that is not being tracked", response.RequestID);
+            }
+        }
+
+        public void Dispose()
+        {
+            _logger.LogTrace("RequestTrackingService disposing");
+
+            foreach (var kvp in _pendingRequests.ToArray())
+            {
+                try
+                {
+                    kvp.Value.Cancel();
+                    kvp.Value.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error canceling pending request {RequestId} during disposal", kvp.Key);
+                }
+            }
+
+            _pendingRequests.Clear();
+            _disposables.Dispose();
+        }
+
+        class PendingRequest : IDisposable
+        {
+            public string RequestId { get; }
+            public bool IsCompleted { get; protected set; }
+            protected readonly CancellationTokenSource TimeoutCts = new();
+
+            readonly TimeSpan _timeout;
+            readonly TaskCompletionSource<ResponseCallTool> _completionSource = new();
+
+            public PendingRequest(string requestId, TimeSpan timeout)
+            {
+                RequestId = requestId;
+                _timeout = timeout;
+                IsCompleted = false;
+
+                TimeoutCts.Token.Register(() =>
+                {
+                    if (!IsCompleted)
+                    {
+                        IsCompleted = true;
+                        _completionSource.TrySetResult(TimedOut());
+                    }
+                });
+            }
+
+            /// <summary>Starts the wait for a deferred completion: it gets the full timeout from now.</summary>
+            public void StartDeadline() => TryCancelTimeout(_timeout);
+
+            ResponseCallTool TimedOut()
+                => ResponseCallTool.Error($"Request {RequestId} did not complete within {_timeout} after the plugin reported it as processing. " +
+                    "It was not re-sent; the plugin may still be running it.", ResponseErrorKind.Timeout, ClientUtils.ServerTimeoutStatusCode).SetRequestID(RequestId);
+
+            /// <summary>Cancels the timeout now (null) or after a delay. A no-op once disposed (a late completion).</summary>
+            void TryCancelTimeout(TimeSpan? after = null)
+            {
+                try
+                {
+                    if (after.HasValue)
+                        TimeoutCts.CancelAfter(after.Value);
+                    else
+                        TimeoutCts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // the tracked call already returned
+                }
+            }
+
+            public void Complete(ResponseCallTool response)
+            {
+                if (!IsCompleted)
+                {
+                    IsCompleted = true;
+                    _completionSource.TrySetResult(response.SetRequestID(RequestId));
+                    TryCancelTimeout();
+                }
+            }
+
+            public async Task<ResponseCallTool> WaitForCompletion(CancellationToken cancellationToken = default)
+            {
+                using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(TimeoutCts.Token, cancellationToken);
+
+                try
+                {
+                    var response = await _completionSource.Task.WaitAsync(linkedCts.Token);
+                    return response;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException) when (TimeoutCts.Token.IsCancellationRequested)
+                {
+                    return TimedOut();
+                }
+            }
+
+            public void Cancel()
+            {
+                if (!IsCompleted)
+                {
+                    IsCompleted = true;
+                    _completionSource.TrySetCanceled();
+                    TryCancelTimeout();
+                }
+            }
+
+            public void Dispose()
+            {
+                TimeoutCts?.Dispose();
+            }
+        }
+    }
+}

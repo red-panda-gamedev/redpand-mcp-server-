@@ -12,9 +12,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using com.IvanMurzak.McpPlugin.AgentConfig;  // AiAgentConfigurator(Registry|Settings), AiAgentConfig, ConnectionMode, ProjectIdentity, ProjectMarker
-using com.IvanMurzak.McpPlugin.Common;       // Consts (+ nested Consts.MCP.Server.AuthOption)
-using com.IvanMurzak.McpPlugin.Common.Utils; // ArgsUtils
+using com.RedPand.MCP.Plugin.AgentConfig;  // AiAgentConfigurator(Registry|Settings), AiAgentConfig, ConnectionMode, ProjectIdentity, ProjectMarker
+using com.RedPand.MCP.Plugin.Common;       // Consts (+ nested Consts.MCP.Server.AuthOption)
+using com.RedPand.MCP.Plugin.Common.Utils; // ArgsUtils
 
 namespace com.RedPand.MCP.Server.Configure
 {

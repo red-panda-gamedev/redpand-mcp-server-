@@ -10,7 +10,7 @@
 
 using System;
 using com.RedPand.MCP.Server.Startup;
-using com.IvanMurzak.McpPlugin.Common;
+using com.RedPand.MCP.Plugin.Common;
 using Xunit;
 
 namespace com.RedPand.MCP.Server.Tests

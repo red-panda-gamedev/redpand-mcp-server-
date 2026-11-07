@@ -1,0 +1,180 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Hub.Client;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.RedPand.MCP.Plugin.Common.Utils;
+using com.RedPand.MCP.Plugin.Server.Auth;
+using com.RedPand.MCP.Plugin.Server.Strategy;
+using com.RedPand.MCP.Plugin.Server.Tools;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
+using R3;
+
+namespace com.RedPand.MCP.Plugin.Server
+{
+    public class RemoteToolRunner : IClientToolHub, ICancellableToolHub, IDisposable
+    {
+        readonly ILogger _logger;
+        readonly IDataArguments _dataArguments;
+        readonly IHubContext<McpServerHub> _remoteAppContext;
+        readonly IRequestTrackingService _requestTrackingService;
+        readonly IMcpConnectionStrategy _strategy;
+        readonly CompositeDisposable _disposables = new();
+        readonly CancellationTokenSource _cancellationTokenSource;
+        readonly PluginCatalogCache? _catalog;
+        readonly ToolCallGuard _guard;
+
+        public RemoteToolRunner(ILogger<RemoteToolRunner> logger, IHubContext<McpServerHub> remoteAppContext, IDataArguments dataArguments, IRequestTrackingService requestTrackingService, IMcpConnectionStrategy strategy)
+            : this(logger, remoteAppContext, dataArguments, requestTrackingService, strategy, catalog: null)
+        {
+        }
+
+        /// <summary>
+        /// With a <paramref name="catalog"/>, a reconnecting plugin's remembered tools answer
+        /// <c>tools/list</c>, a tool call waits for the plugin to return, and a list never waits for a
+        /// plugin that is not there (see <see cref="CatalogAwareInvoke"/>).
+        /// </summary>
+        public RemoteToolRunner(ILogger<RemoteToolRunner> logger, IHubContext<McpServerHub> remoteAppContext, IDataArguments dataArguments, IRequestTrackingService requestTrackingService, IMcpConnectionStrategy strategy, PluginCatalogCache? catalog)
+        {
+            _catalog = catalog;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger.LogTrace("Ctor.");
+            _dataArguments = dataArguments ?? throw new ArgumentNullException(nameof(dataArguments));
+            _remoteAppContext = remoteAppContext ?? throw new ArgumentNullException(nameof(remoteAppContext));
+            _requestTrackingService = requestTrackingService ?? throw new ArgumentNullException(nameof(requestTrackingService));
+            _strategy = strategy ?? throw new ArgumentNullException(nameof(strategy));
+            _cancellationTokenSource = _disposables.ToCancellationTokenSource();
+            _guard = new ToolCallGuard(strategy,
+                (connectionId, ct) => ExtensionsMcpServerBuilder.FetchPluginToolsAsync(remoteAppContext, dataArguments.PluginTimeoutMs, connectionId, ct),
+                TimeSpan.FromMilliseconds(dataArguments.GetToolTimeoutMs()), dataArguments.GetPluginReconnectWait(), _logger);
+        }
+
+        public Task<ResponseData<ResponseCallTool>> RunCallTool(RequestCallTool request) => RunCallTool(request, default);
+
+        /// <summary>
+        /// Validates the arguments, then sends the call (see <see cref="ToolCallGuard"/>): under one
+        /// deadline, and again only when the plugin answered that it did not execute it.
+        /// </summary>
+        public async Task<ResponseData<ResponseCallTool>> RunCallTool(RequestCallTool request, CancellationToken cancellationToken = default)
+        {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+            return await _guard.CallAsync(request, ct => SendCallAsync(request, ct), linkedCts.Token);
+        }
+
+        async Task<ResponseData<ResponseCallTool>> SendCallAsync(RequestCallTool request, CancellationToken cancellationToken)
+        {
+            var toolTimeoutMs = _dataArguments.GetToolTimeoutMs();
+            var response = await _requestTrackingService.TrackRequestAsync(
+                request.RequestID,
+                async () =>
+                {
+                    // Sent once, never retried: a retry would run the tool a second time. Waiting for a
+                    // reconnecting plugin happens BEFORE sending, so it cannot cause a second run.
+                    var responseData = await CatalogAwareInvoke.SendAsync<RequestCallTool, ResponseCallTool>(
+                        _logger, _remoteAppContext, nameof(IClientToolHub.RunCallTool), request, toolTimeoutMs,
+                        retryAfterDelivery: false, _strategy, _catalog, cancellationToken);
+
+                    if (responseData.Status == ResponseStatus.Error)
+                    {
+                        var errorKind = responseData.ErrorKind == ResponseErrorKind.None
+                            ? ResponseErrorKind.Internal
+                            : responseData.ErrorKind;
+                        return ResponseCallTool.Error(responseData.Message ?? "Tool invocation failed", errorKind, responseData.HttpStatusCode);
+                    }
+
+                    return responseData.Value ?? ResponseCallTool.Error("Response data is null", ResponseErrorKind.Internal);
+                },
+                TimeSpan.FromMilliseconds(toolTimeoutMs),
+                cancellationToken);
+
+            // Wrap the ResponseCallTool back into ResponseData<ResponseCallTool>
+            return response.Pack(request.RequestID);
+        }
+
+        public Task<ResponseData<ResponseListTool[]>> RunListTool(RequestListTool request) => RunListTool(request, default);
+        public async Task<ResponseData<ResponseListTool[]>> RunListTool(RequestListTool request, CancellationToken cancellationToken = default)
+        {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token, cancellationToken);
+            cancellationToken = linkedCts.Token;
+
+            // A connected runtime is listed alongside, so a slow game adds no time unless it is slower than the editor.
+            var runtime = (_strategy as IPluginRoleStrategy)?.Registry.WithRole(ClientRole.Runtime).FirstOrDefault();
+            var runtimeList = runtime == null ? null : ListRuntimeAsync(runtime, cancellationToken);
+
+            string? answeredBy = null;
+            var response = await CatalogAwareInvoke.ListAsync<RequestListTool, ResponseListTool[]>(
+                _logger, _remoteAppContext, nameof(IClientToolHub.RunListTool), request, _dataArguments,
+                _strategy, _catalog, PluginCatalogKind.Tools, cancellationToken,
+                onAnswered: (connectionId, answer) =>
+                {
+                    answeredBy = connectionId;
+                    if (answer.Status == ResponseStatus.Success)
+                        _guard.Remember(connectionId, answer.Value);
+                });
+
+            if (response.Status == ResponseStatus.Error)
+                return ResponseData<ResponseListTool[]>.Error(request.RequestID, response.Message ?? "Got an error during listing tools", response.ErrorKind, response.HttpStatusCode);
+
+            if (response.Value != null && runtimeList != null && runtime != answeredBy)
+                response.Value = AddRuntimeOnlyTools(response.Value, await runtimeList);
+            return response;
+        }
+
+        /// <summary>The longest a runtime's tool list may take while an editor answers <c>tools/list</c>.</summary>
+        static readonly TimeSpan RuntimeListTimeout = TimeSpan.FromSeconds(3);
+
+        /// <summary>
+        /// The runtime's tools (cached for call routing), or null when it does not answer within
+        /// <see cref="RuntimeListTimeout"/>. Never throws: the editor's list is answered without them.
+        /// </summary>
+        async Task<ResponseListTool[]?> ListRuntimeAsync(string runtime, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var timeoutMs = (int)Math.Min(_dataArguments.PluginTimeoutMs, RuntimeListTimeout.TotalMilliseconds);
+                var tools = await ExtensionsMcpServerBuilder.FetchPluginToolsAsync(_remoteAppContext, timeoutMs, runtime, cancellationToken);
+                if (tools != null)
+                    _guard.Remember(runtime, tools);
+                return tools;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not list the runtime's tools.");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// While an editor answers <c>tools/list</c>, a connected runtime's tools that the editor does not have (game-only
+        /// tools, <see cref="ToolTarget.Runtime"/>) are listed too: their calls go to the runtime (see <see cref="ToolCallGuard"/>).
+        /// </summary>
+        static ResponseListTool[] AddRuntimeOnlyTools(ResponseListTool[] tools, ResponseListTool[]? runtimeTools)
+        {
+            if (runtimeTools == null)
+                return tools;
+            var listed = new HashSet<string>(tools.Select(tool => tool.Name), StringComparer.Ordinal);
+            var runtimeOnly = runtimeTools.Where(tool => tool?.Name != null && !listed.Contains(tool.Name)).ToArray();
+            return runtimeOnly.Length == 0 ? tools : tools.Concat(runtimeOnly).ToArray();
+        }
+
+        public void Dispose()
+        {
+            _logger.LogTrace("{0} Dispose.", typeof(RemoteToolRunner).Name);
+            _disposables.Dispose();
+        }
+    }
+}

@@ -12,7 +12,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using com.RedPand.MCP.Server.Tests.Harness;
-using com.IvanMurzak.McpPlugin.Common.Model;
+using com.RedPand.MCP.Plugin.Common.Model;
 using Xunit;
 
 namespace com.RedPand.MCP.Server.Tests

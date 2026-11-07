@@ -1,0 +1,890 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Net;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common.Hub.Client;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Logging;
+using R3;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public partial class ConnectionManager : IConnectionManager, IAsyncDisposable
+    {
+        public Task<bool> Connect(CancellationToken cancellationToken = default)
+            => ConnectAsync(cancellationToken, firstOutcomeOnly: false);
+
+        public Task<bool> ConnectForRecovery(CancellationToken cancellationToken)
+            => ConnectAsync(cancellationToken, firstOutcomeOnly: true);
+
+        private async Task<bool> ConnectAsync(CancellationToken cancellationToken, bool firstOutcomeOnly)
+        {
+            if (_isDisposed.Value)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                    nameof(ConnectionManager), _guid, nameof(Connect));
+                return false; // already disposed
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} called.",
+                nameof(ConnectionManager), _guid, nameof(Connect));
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Connection canceled before starting for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(Connect), Endpoint);
+                return false;
+            }
+
+            // SINGLE-FLIGHT: atomically either JOIN the in-flight attempt or INSTALL ourselves
+            // as its leader. The check and the publication happen under ONE
+            // _ongoingConnectionGate hold. Previously the check and the publication were
+            // separated by the _gate acquisition (check-then-act race): a caller that read
+            // null here before the leader published would queue on _gate — which the leader
+            // holds for the WHOLE attempt — wake only after that attempt completed and the
+            // field was cleared, and then start a second, duplicate connection attempt.
+            // A TaskCompletionSource proxy (instead of the real attempt task) is published
+            // because the real task can only be created while holding _gate, and _gate must
+            // NOT be acquired under _ongoingConnectionGate (Disconnect acquires them in the
+            // opposite order: _gate → _ongoingConnectionGate).
+            Task<bool>? ongoingTask;
+            Task<bool>? ongoingFirstOutcome;
+            TaskCompletionSource<bool>? connectionAttempt = null;
+            TaskCompletionSource<bool>? firstOutcome = null;
+            await _ongoingConnectionGate.WaitAsync(cancellationToken);
+            try
+            {
+                ongoingTask = _ongoingConnectionTask;
+                ongoingFirstOutcome = _ongoingFirstOutcomeTask;
+                if (ongoingTask == null)
+                {
+                    connectionAttempt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    firstOutcome = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _ongoingConnectionTask = connectionAttempt.Task;
+                    _ongoingFirstOutcomeTask = firstOutcome.Task;
+                }
+            }
+            finally
+            {
+                _ongoingConnectionGate.Release();
+            }
+
+            if (ongoingTask != null)
+            {
+                // The rejection signal fires before the rejected cycle's cleanup finishes.
+                // Recovery must wait for that dying cycle, then start a fresh one; joining its
+                // already-failed first outcome would silently lose a fast token refresh.
+                if (firstOutcomeOnly && !_continueToReconnect.CurrentValue)
+                {
+                    await WaitForConnectionCompletion(ongoingTask, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return await ConnectAsync(cancellationToken, firstOutcomeOnly: true);
+                }
+                // A joiner that cannot cancel must attach to the FIRST DECIDED OUTCOME, never to
+                // the full attempt: with the default (unlimited) reconnect cap the leader's loop
+                // has no terminating condition, so awaiting its completion with a token that can
+                // never fire would be an await that can never complete. Same reasoning as the
+                // leader's own release below.
+                var joinTarget = (firstOutcomeOnly || !cancellationToken.CanBeCanceled) && ongoingFirstOutcome != null
+                    ? ongoingFirstOutcome
+                    : ongoingTask;
+                return await WaitForConnectionCompletion(joinTarget, cancellationToken);
+            }
+
+            // The leader's full attempt: the connection cycle plus the (possibly unbounded)
+            // reconnect retry loop, followed by the single-flight cleanup.
+            async Task<bool> RunAttemptAsync()
+            {
+                var result = false;
+                try
+                {
+                    result = await ConnectCore(cancellationToken, firstOutcome);
+                    return result;
+                }
+                finally
+                {
+                    try
+                    {
+                        // Use CancellationToken.None: cleanup must run even when cancellationToken
+                        // has already been cancelled by DisconnectImmediate.
+                        await _ongoingConnectionGate.WaitAsync(CancellationToken.None);
+                        // DisconnectImmediate may have detached this attempt (nulled the field) and a
+                        // successor Connect may already have installed itself — never clobber it.
+                        if (ReferenceEquals(_ongoingConnectionTask, connectionAttempt!.Task))
+                        {
+                            _ongoingConnectionTask = null;
+                            _ongoingFirstOutcomeTask = null;
+                        }
+                        _ongoingConnectionGate.Release();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // Disposed mid-attempt: the field no longer matters, but the proxies below
+                        // MUST still complete so joined callers are never orphaned.
+                    }
+                    finally
+                    {
+                        // Complete the proxy only AFTER the field is cleared, so a caller arriving
+                        // after completion starts a fresh attempt instead of adopting a stale result.
+                        connectionAttempt!.TrySetResult(result);
+                        // Safety net: the loop normally releases first-outcome waiters at its first
+                        // backoff, but every early return (disposed, cancelled, already connected,
+                        // provider failure) reaches here instead — no waiter may be orphaned.
+                        firstOutcome!.TrySetResult(result);
+                    }
+                }
+            }
+
+            // A caller that handed us a token we can NEVER observe — CancellationToken.None, which
+            // is the `= default` of this method's own signature and therefore the shape of every
+            // `Connect()` call site — must not be awaited on the reconnect retry loop. With the
+            // default cap (MaxConsecutiveConnectionFailures == 0 = retry an unreachable endpoint
+            // forever) that loop cannot give up and the token cannot fire, so the await would have
+            // no terminating condition at all and would simply never complete. Release such a
+            // caller with the FIRST DECIDED OUTCOME and let the loop keep reconnecting in the
+            // background — the reconnect intent (KeepConnected) is untouched, so the historical
+            // Unity/Unreal behaviour is preserved; only the caller stops being held hostage.
+            //
+            // A caller that supplied a REAL token keeps the historical contract exactly: it awaits
+            // the whole loop and is released when its own token cancels (godotengine/godot#78513,
+            // pinned by ConnectionManagerRejectionTests.Connect_RetriesUnlimited_ByDefault_WhenNotOptedIn).
+            if (firstOutcomeOnly || !cancellationToken.CanBeCanceled)
+            {
+                var background = RunAttemptAsync();
+                // Fire-and-forget: observe faults so an unobserved exception can never escape.
+                _ = background.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+                return await WaitForConnectionCompletion(firstOutcome!.Task, cancellationToken);
+            }
+
+            return await RunAttemptAsync();
+        }
+
+        /// <summary>
+        /// The single-flight leader's connection flow: serializes on <see cref="_gate"/> and runs
+        /// the actual connection attempt. Only ever entered by the caller that installed itself in
+        /// <see cref="_ongoingConnectionTask"/>; everyone else joins that task instead.
+        /// </summary>
+        private async Task<bool> ConnectCore(CancellationToken cancellationToken, TaskCompletionSource<bool>? firstOutcome)
+        {
+            try
+            {
+                _logger.LogDebug("{class}[{guid}] {method} acquiring gate.",
+                    nameof(ConnectionManager), _guid, nameof(Connect));
+
+                await _gate.WaitAsync(cancellationToken);
+
+                _logger.LogDebug("{class}[{guid}] {method} acquired gate.",
+                    nameof(ConnectionManager), _guid, nameof(Connect));
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Connection canceled while waiting for gate for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(Connect), Endpoint);
+                return false;
+            }
+
+            try
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Connection canceled before starting for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(Connect), Endpoint);
+                    return false;
+                }
+
+                if (_isDisposed.Value)
+                {
+                    _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                        nameof(ConnectionManager), _guid, nameof(Connect));
+                    return false; // already disposed
+                }
+
+                if (_hubConnection.CurrentValue?.State is HubConnectionState.Connected or HubConnectionState.Connecting)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Already connected. Ignoring.",
+                        nameof(ConnectionManager), _guid, nameof(Connect));
+                    return true;
+                }
+
+                // Dispose the previous internal CancellationTokenSource if it exists
+                CancelInternalToken(dispose: true);
+
+                internalCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cancellationToken = internalCts.Token;
+
+                _continueToReconnect.Value = true;
+
+                return await InternalConnect(cancellationToken, firstOutcome);
+            }
+            finally
+            {
+                _logger.LogDebug("{class}[{guid}] {method} releasing gate.",
+                    nameof(ConnectionManager), _guid, nameof(Connect));
+                _gate.Release();
+            }
+        }
+
+        private async Task<bool> WaitForConnectionCompletion(Task<bool> ongoingTask, CancellationToken cancellationToken)
+        {
+            _logger.LogDebug("{class}[{guid}] {method} Connection already in progress, waiting for existing attempt.",
+                nameof(ConnectionManager), _guid, nameof(WaitForConnectionCompletion));
+            try
+            {
+                var completedTask = await Task.WhenAny(ongoingTask, Task.Delay(Timeout.Infinite, cancellationToken));
+                if (completedTask != ongoingTask)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Waiting for ongoing connection was canceled for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(WaitForConnectionCompletion), Endpoint);
+                    return false;
+                }
+                return await ongoingTask;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Ongoing connection was canceled for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(WaitForConnectionCompletion), Endpoint);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Internal connection logic. Must be called from within a _gate-protected section.
+        /// </summary>
+        private async Task<bool> InternalConnect(CancellationToken cancellationToken, TaskCompletionSource<bool>? firstOutcome = null)
+        {
+            try
+            {
+                if (_isDisposed.Value)
+                {
+                    _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                        nameof(ConnectionManager), _guid, nameof(InternalConnect));
+                    return false; // already disposed
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Connection canceled before creating HubConnection for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(InternalConnect), Endpoint);
+                    return false;
+                }
+
+                _logger.LogDebug("{class}[{guid}] {method} called.",
+                    nameof(ConnectionManager), _guid, nameof(InternalConnect));
+
+                if (!await CreateHubConnectionIfNeeded(cancellationToken))
+                    return false;
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Connection canceled before starting connection loop for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(InternalConnect), Endpoint);
+                    return false;
+                }
+
+                // Small stabilization delay after HubConnection creation before the first StartAsync call.
+                // SignalR's internal DI/setup may not be fully ready immediately after CreateConnectionAsync returns.
+                // TODO: remove this delay if integration tests confirm it is no longer needed.
+                await Task.Delay(TakeFirstAttemptDelay(), cancellationToken);
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Connection canceled before starting connection loop for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(InternalConnect), Endpoint);
+                    return false;
+                }
+
+                return await StartConnectionLoop(cancellationToken, firstOutcome);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Connection was canceled for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(InternalConnect), Endpoint);
+                return false;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogError("{class}[{guid}] {method} Invalid operation during connection: {message}\n{stackTrace}",
+                    nameof(ConnectionManager), _guid, nameof(InternalConnect), ex.Message, ex.StackTrace);
+                return false;
+            }
+            catch (HubException ex)
+            {
+                _logger.LogError("{class}[{guid}] {method} SignalR HubException during connection: {message}\n{stackTrace}",
+                    nameof(ConnectionManager), _guid, nameof(InternalConnect), ex.Message, ex.StackTrace);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("{class}[{guid}] {method} Unexpected error during connection: {message}\n{stackTrace}",
+                    nameof(ConnectionManager), _guid, nameof(InternalConnect), ex.Message, ex.StackTrace);
+                return false;
+            }
+        }
+
+        // Helper methods for better separation of concerns
+        private async Task<bool> EnsureConnection(CancellationToken cancellationToken)
+        {
+            if (_hubConnection.CurrentValue?.State is HubConnectionState.Connected)
+                return true;
+
+            if (!_continueToReconnect.CurrentValue)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} Connection not available and auto-reconnect disabled for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(EnsureConnection), Endpoint);
+                return false;
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} Connection is not established. Attempting to connect to: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(EnsureConnection), Endpoint);
+
+            await Connect(cancellationToken);
+
+            if (_hubConnection.CurrentValue?.State is not HubConnectionState.Connected)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} Failed to establish connection to remote endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(EnsureConnection), Endpoint);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Creates a HubConnection if needed. Must be called from within a _gate-protected section.
+        /// </summary>
+        private async Task<bool> CreateHubConnectionIfNeeded(CancellationToken cancellationToken)
+        {
+            var existing = _hubConnection.Value;
+            if (existing != null && existing.State != HubConnectionState.Disconnected)
+                return true;
+
+            hubConnectionLogger?.Dispose();
+            hubConnectionObservable?.Dispose();
+            _hubObservableReconnectSubscription.Disposable = null;
+
+            // After SignalR auto-reconnect exhausts retries, the HubConnection is stuck in
+            // Disconnected state. Dispose it so a fresh transport handshake can succeed.
+            if (existing != null)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Disposing existing Disconnected HubConnection for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded), Endpoint);
+                try { await existing.DisposeAsync(); }
+                catch (Exception ex) { _logger.LogDebug(ex, "{class}[{guid}] {method} DisposeAsync of stale HubConnection failed", nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded)); }
+                _hubConnection.Value = null;
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} Creating new HubConnection instance for endpoint: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded), Endpoint);
+
+            var hubConnection = await _hubConnectionBuilder.CreateConnectionAsync(Endpoint);
+            if (hubConnection == null)
+            {
+                _logger.LogError("{class}[{guid}] {method} Failed to create HubConnection instance. Check connection configuration for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded), Endpoint);
+                return false;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Connection canceled before setting up HubConnection for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded), Endpoint);
+
+                try
+                {
+                    await hubConnection.DisposeAsync();
+                }
+                catch
+                {
+                    // Ignore exceptions during dispose
+                }
+                return false;
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} Successfully created HubConnection instance for endpoint: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(CreateHubConnectionIfNeeded), Endpoint);
+            _hubConnection.Value = hubConnection;
+
+            SetupHubConnectionLogging(hubConnection);
+            SetupHubConnectionObservables(hubConnection);
+
+            return true;
+        }
+
+        private void SetupHubConnectionLogging(HubConnection hubConnection)
+        {
+            hubConnectionLogger = new(_logger, hubConnection, guid: _guid);
+        }
+
+        private void SetupHubConnectionObservables(HubConnection hubConnection)
+        {
+            hubConnectionObservable = new(hubConnection);
+
+            // On successful auto-reconnect, re-trigger the version handshake.
+            // Guard against a race where Reconnected fires while a disconnect is in progress.
+            var reconnectedSub = hubConnectionObservable.Reconnected
+                .Where(_ => _continueToReconnect.CurrentValue && !_cancellationTokenSource.IsCancellationRequested)
+                .Subscribe(_ =>
+                {
+                    _logger.LogInformation("{class}[{guid}] {method} SignalR auto-reconnect succeeded for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(SetupHubConnectionObservables), Endpoint);
+                    _transportConnected.OnNext(Unit.Default);
+                });
+
+            // On auto-reconnect exhaustion (or a graceful server close), create a fresh HubConnection and restart.
+            var closedSub = hubConnectionObservable.Closed
+                .Where(_ => _continueToReconnect.CurrentValue && !_cancellationTokenSource.IsCancellationRequested)
+                .Subscribe(HandleHubClosed);
+
+            // Record a ForceDisconnect for the attempt in flight, so the connection loop can tell a real
+            // authorization denial from a close for a temporary server-side reason. An additional
+            // handler: the hub connector's own ForceDisconnect handler still runs.
+            var forceDisconnectSub = hubConnection.On<string?>(nameof(IClientDisconnectable.ForceDisconnect), _ =>
+            {
+                if (ReferenceEquals(_hubConnection.CurrentValue, hubConnection))
+                    NoteServerForceDisconnect();
+            });
+
+            _hubObservableReconnectSubscription.Disposable = new CompositeDisposable(reconnectedSub, closedSub, forceDisconnectSub);
+        }
+
+        /// <summary>
+        /// The hub connection closed while reconnection is wanted. A close WITHOUT an error is a
+        /// graceful server-initiated close (e.g. the server shutting down for a deploy): the fresh
+        /// connect cycle then starts after a short jittered delay instead of the fixed stabilization
+        /// delay (see <see cref="TakeFirstAttemptDelay"/>). Uses _cancellationTokenSource (object
+        /// lifetime) to avoid self-cancellation when Connect() replaces the connection-cycle internalCts.
+        /// </summary>
+        internal void HandleHubClosed(Exception? exception)
+        {
+            if (exception == null)
+            {
+                _logger.LogInformation("{class}[{guid}] {method} Connection closed by the server. Reconnecting shortly to: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(HandleHubClosed), Endpoint);
+                Interlocked.Exchange(ref _fastReconnectPending, 1);
+            }
+            else
+            {
+                _logger.LogWarning(exception, "{class}[{guid}] {method} Connection closed (auto-reconnect exhausted). Attempting fresh reconnection to: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(HandleHubClosed), Endpoint);
+            }
+            // Fire-and-forget: Connect() handles sequential execution via its internal gate.
+            var reconnectTask = Connect(_cancellationTokenSource.Token);
+            _ = reconnectTask.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+        }
+
+        /// <summary>
+        /// Delay between creating the HubConnection and the first StartAsync of a connect cycle: the
+        /// fixed 1 s stabilization delay, or — right after a graceful server-initiated close — a short
+        /// jittered delay (≤ 1 s) so plugins come back quickly after a deploy without all reconnecting
+        /// in the same instant. Consumes the fast-reconnect flag. Virtual for tests.
+        /// </summary>
+        internal virtual TimeSpan TakeFirstAttemptDelay()
+            => Interlocked.Exchange(ref _fastReconnectPending, 0) == 1
+                ? ReconnectJitter.NextFastReconnectDelay()
+                : TimeSpan.FromSeconds(1);
+
+        /// <summary>
+        /// Maximum number of consecutive authorization rejections (a <c>ForceDisconnect</c> + close right
+        /// after the handshake, or an observable HTTP 401/403) before the connection loop gives up and
+        /// fires <see cref="OnAuthorizationRejected"/>.
+        /// </summary>
+        private const int MaxConsecutiveRejections = 3;
+
+        /// <summary>
+        /// Consecutive closes right after the handshake WITHOUT <c>ForceDisconnect</c> before the loop
+        /// escalates them to an authorization rejection. Each is first treated as transient (backend
+        /// restarting, webhook timeout); 5 attempts span ~30–40 s with the stability window and the
+        /// 5 s backoff — longer than a backend restart — yet a real denial whose ForceDisconnect was
+        /// lost (it can race the server's abort) still reaches the refresh path instead of looping forever.
+        /// </summary>
+        private const int MaxConsecutiveUnexplainedCloses = 5;
+
+        /// <summary>
+        /// If the server closes the connection within this duration after a successful handshake,
+        /// it is counted as an immediate rejection (e.g. authorization failure).
+        /// Protected to allow test subclasses to reduce the delay.
+        /// </summary>
+        protected virtual TimeSpan RejectionThreshold { get; } = TimeSpan.FromSeconds(3);
+
+        /// <summary>
+        /// Starts the connection retry loop. Must be called from within a _gate-protected section.
+        /// Detects server-side rejection patterns (a <c>ForceDisconnect</c> + close immediately after the
+        /// handshake, and an observable HTTP 401/403 during the attempt itself —
+        /// <see cref="ConnectionAttemptResult.AuthRejected"/>) and stops retrying after
+        /// <see cref="MaxConsecutiveRejections"/> consecutive rejections. A close right after the
+        /// handshake WITHOUT <c>ForceDisconnect</c> is a transient failure, escalated to a rejection only
+        /// after <see cref="MaxConsecutiveUnexplainedCloses"/> in a row.
+        /// </summary>
+        private async Task<bool> StartConnectionLoop(CancellationToken cancellationToken, TaskCompletionSource<bool>? firstOutcome = null)
+        {
+            _logger.LogDebug("{class}[{guid}] {method} Starting connection loop for endpoint: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint);
+
+            var consecutiveRejections = 0;
+            var consecutiveFailures = 0;
+            var consecutiveUnexplainedCloses = 0;
+
+            while (!cancellationToken.IsCancellationRequested && _continueToReconnect.CurrentValue)
+            {
+                Interlocked.Exchange(ref _serverForceDisconnected, 0); // per attempt — see NoteServerForceDisconnect
+                var attempt = await AttemptConnection(cancellationToken);
+                bool rejected;
+                if (attempt == ConnectionAttemptResult.Connected)
+                {
+                    // Connection established — verify the server doesn't immediately close it.
+                    // A server-side authorization rejection typically closes the WebSocket within
+                    // milliseconds of the handshake completing.
+                    try
+                    {
+                        await Task.Delay(RejectionThreshold, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+
+                    if (_hubConnection.CurrentValue?.State is HubConnectionState.Connected)
+                    {
+                        // SignalR connection survived the stability check — it's genuinely established.
+                        // Note: _connectionState is NOT set to Connected here. That happens only
+                        // after the application-level handshake succeeds (via SetConnected).
+                        consecutiveRejections = 0;
+                        // A graceful close noted while this cycle was already running (its Connect
+                        // joined us) is settled now; never let it shorten an unrelated later cycle.
+                        Interlocked.Exchange(ref _fastReconnectPending, 0);
+                        return true;
+                    }
+
+                    // Server closed the connection immediately after handshake. Only a close that
+                    // followed ForceDisconnect is an authorization denial; without it the server
+                    // could not authorize right now (backend restarting during a deploy, webhook
+                    // timeout) — a transient failure, so the token is not refreshed (each refresh
+                    // rotates it) just because the server was briefly unavailable.
+                    //
+                    // The ForceDisconnect message does not always reach the client before the
+                    // server's Context.Abort, so a real denial can also look like this. Bound it:
+                    // after MaxConsecutiveUnexplainedCloses in a row (longer than a backend restart)
+                    // escalate to the rejection path (OnAuthorizationRejected → refresh + reconnect).
+                    _connectionState.Value = HubConnectionState.Disconnected;
+                    rejected = Volatile.Read(ref _serverForceDisconnected) == 1;
+                    if (rejected)
+                    {
+                        consecutiveUnexplainedCloses = 0;
+                        _logger.LogWarning("{class}[{guid}] {method} Connection to {endpoint} was force-disconnected by the server immediately after handshake ({count}/{max}). " +
+                            "This indicates authorization failure (invalid or revoked token).",
+                            nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveRejections + 1, MaxConsecutiveRejections);
+                    }
+                    else
+                    {
+                        consecutiveUnexplainedCloses++;
+                        _logger.LogWarning("{class}[{guid}] {method} Connection to {endpoint} was closed by the server immediately after handshake without a rejection reason ({count}/{max}). " +
+                            "Treating it as a temporary server-side failure; will retry.",
+                            nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveUnexplainedCloses, MaxConsecutiveUnexplainedCloses);
+                        if (consecutiveUnexplainedCloses >= MaxConsecutiveUnexplainedCloses)
+                        {
+                            _logger.LogWarning("{class}[{guid}] {method} Connection to {endpoint} was closed right after the handshake {count} times in a row. " +
+                                "Treating it as an authorization rejection (the server's ForceDisconnect may have been lost).",
+                                nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveUnexplainedCloses);
+                            StopAfterRejectionCap(MaxConsecutiveRejections);
+                            return false;
+                        }
+                    }
+                }
+                else if (attempt == ConnectionAttemptResult.AuthRejected)
+                {
+                    // The server ANSWERED the attempt with an observable HTTP 401/403
+                    // (oauth-client-error-hygiene 02 §C3.4): it is reachable but rejecting this client.
+                    consecutiveUnexplainedCloses = 0;
+                    rejected = true;
+                    _logger.LogWarning("{class}[{guid}] {method} Connection attempt to {endpoint} was rejected with HTTP 401/403 ({count}/{max}). " +
+                        "This indicates an authorization failure (invalid or revoked token).",
+                        nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveRejections + 1, MaxConsecutiveRejections);
+                }
+                else
+                {
+                    // Connection attempt itself failed (server unreachable, timeout, etc.)
+                    consecutiveUnexplainedCloses = 0;
+                    rejected = false;
+                }
+
+                if (rejected)
+                {
+                    // A rejection counts toward the auth-rejection cap and resets the
+                    // unreachable-endpoint failure count (the server answered, so it is reachable).
+                    consecutiveFailures = 0;
+                    consecutiveRejections++;
+                    if (StopAfterRejectionCap(consecutiveRejections))
+                        return false;
+                }
+                else
+                {
+                    consecutiveRejections = 0;
+                    consecutiveFailures++;
+                    if (StopAfterFailureCap(consecutiveFailures))
+                        break;
+                }
+
+                if (cancellationToken.IsCancellationRequested || !_continueToReconnect.CurrentValue)
+                    break;
+
+                // The attempt cycle is decided and the loop is about to back off and retry. This
+                // is the release point for callers that cannot cancel (see Connect): they get this
+                // outcome now instead of awaiting a loop that may never terminate. Idempotent, so
+                // later iterations are no-ops and the very first decided outcome is the one served.
+                firstOutcome?.TrySetResult(false);
+
+                await WaitBeforeRetry(cancellationToken);
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} Connection loop terminated for endpoint: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint);
+            return false;
+        }
+
+        /// <summary>
+        /// When the consecutive-rejection cap is reached: stop the reconnect loop, settle
+        /// idle-Disconnected, and fire the aggregated <see cref="OnAuthorizationRejected"/> signal.
+        /// Shared by both rejection flavours (ForceDisconnect + close after handshake, and an observable
+        /// HTTP 401/403 during the attempt — 02 §C3.4). Returns true when the cap fired.
+        /// </summary>
+        private bool StopAfterRejectionCap(int consecutiveRejections)
+        {
+            if (consecutiveRejections < MaxConsecutiveRejections)
+                return false;
+
+            _logger.LogError("{class}[{guid}] {method} Connection to {endpoint} rejected {count} times consecutively. " +
+                "Stopping reconnection attempts. The server is likely rejecting this client due to an authorization issue. " +
+                "Please check your authorization token and try reconnecting.",
+                nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveRejections);
+            _continueToReconnect.Value = false;
+            _connectionState.Value = HubConnectionState.Disconnected;
+            _authorizationRejected.OnNext(Unit.Default);
+            return true;
+        }
+
+        /// <summary>
+        /// OPT-IN bounded reconnect (ConnectionConfig.MaxConsecutiveConnectionFailures > 0): stop retrying
+        /// an UNREACHABLE endpoint after a bounded number of consecutive failures. Retrying forever keeps
+        /// a fresh negotiate/connect in-flight every WaitBeforeRetry window; a consumer hosted in a
+        /// COLLECTIBLE AssemblyLoadContext (e.g. the Godot editor addon) that performs a C# hot-reload
+        /// landing on one of those in-flight negotiates cannot unload the context ("Failed to unload
+        /// assemblies", godotengine/godot#78513). Giving up settles the connection into idle-Disconnected
+        /// (no in-flight transport work), so reloads after it are clean; reconnect via Connect once the
+        /// server is up. Default (0) = unlimited retry — historical behaviour for Unity/Unreal. Mirrors
+        /// the always-on MaxConsecutiveRejections auth-failure cap. Returns true when the cap fired.
+        /// </summary>
+        private bool StopAfterFailureCap(int consecutiveFailures)
+        {
+            if (_maxConsecutiveConnectionFailures <= 0 || consecutiveFailures < _maxConsecutiveConnectionFailures)
+                return false;
+
+            _logger.LogWarning("{class}[{guid}] {method} Connection to {endpoint} failed {count} times consecutively (endpoint unreachable, or closed by the server right after the handshake). " +
+                "Stopping reconnection attempts; reconnect once the server is reachable.",
+                nameof(ConnectionManager), _guid, nameof(StartConnectionLoop), Endpoint, consecutiveFailures);
+            _continueToReconnect.Value = false;
+            _connectionState.Value = HubConnectionState.Disconnected;
+            return true;
+        }
+
+        /// <summary>
+        /// Records that the server sent <c>ForceDisconnect</c> during the current connection attempt.
+        /// McpPlugin.Server sends it right before closing a connection whose authorization was DENIED,
+        /// and closes without it when authorization is only temporarily unavailable — the loop uses this
+        /// to tell the two apart for a close immediately after the handshake. Reset before every attempt.
+        /// </summary>
+        internal void NoteServerForceDisconnect() => Interlocked.Exchange(ref _serverForceDisconnected, 1);
+
+        /// <summary>
+        /// Outcome of one connection attempt — the failure-reason seam of
+        /// <see cref="AttemptConnection"/> (oauth-client-error-hygiene 02 §C3.4). Public (not
+        /// protected) so test doubles' composers — not only <see cref="ConnectionManager"/>
+        /// subclasses themselves — can build attempt sequences.
+        /// </summary>
+        public enum ConnectionAttemptResult
+        {
+            /// <summary>The transport started (handshake succeeded, or it was already connected/connecting).</summary>
+            Connected,
+
+            /// <summary>The attempt failed for a non-auth (or unclassifiable) reason: unreachable endpoint, timeout, cancellation.</summary>
+            Failed,
+
+            /// <summary>
+            /// The attempt failed with an OBSERVABLE HTTP 401/403 (auth rejection at negotiate/handshake).
+            /// Only produced on TFMs where <c>HttpRequestException.StatusCode</c> exists (.NET 5+); the
+            /// netstandard2.1 (Unity) build never produces it — no message-text matching on any TFM.
+            /// </summary>
+            AuthRejected,
+        }
+
+        /// <summary>
+        /// Attempts to start the connection. Must be called from within a _gate-protected section.
+        /// Protected virtual to allow test subclasses to simulate server behavior.
+        /// </summary>
+        protected virtual async Task<ConnectionAttemptResult> AttemptConnection(CancellationToken cancellationToken)
+        {
+            var connection = _hubConnection.CurrentValue;
+            if (connection == null)
+                return ConnectionAttemptResult.Failed;
+
+            if (connection.State is HubConnectionState.Connected or HubConnectionState.Connecting)
+                return ConnectionAttemptResult.Connected;
+
+            _logger.LogInformation("{class}[{guid}] {method} Starting connection attempt to: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint);
+
+            try
+            {
+                var connectionTask = connection.StartAsync(cancellationToken);
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                var completedTask = await Task.WhenAny(connectionTask, timeoutTask);
+
+                // WhenAny does not throw: a cancellation we asked for would read as a timeout or a failure.
+                if (cancellationToken.IsCancellationRequested && !connectionTask.IsCompletedSuccessfully)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Connection attempt canceled for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint);
+                    _ = connectionTask.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+                    return ConnectionAttemptResult.Failed;
+                }
+
+                if (completedTask == timeoutTask)
+                {
+                    _logger.LogWarning("{class}[{guid}] {method} Connection attempt timed out after 30 seconds for endpoint: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint);
+                    // Observe the task to prevent UnobservedTaskException; the exception
+                    // (typically OperationCanceledException) is expected and can be ignored.
+                    _ = connectionTask.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+                    return ConnectionAttemptResult.Failed;
+                }
+
+                if (connectionTask.IsCompletedSuccessfully)
+                {
+                    _logger.LogInformation("{class}[{guid}] {method} Connection established successfully to: {endpoint}",
+                        nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint);
+                    _transportConnected.OnNext(Unit.Default);
+                    return ConnectionAttemptResult.Connected;
+                }
+                else
+                {
+                    _logger.LogWarning("{class}[{guid}] {method} Connection attempt failed for endpoint: {endpoint}. Exception: {exception}",
+                        nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint, connectionTask.Exception?.Message);
+                    LogCredentialScopeRefusal(connectionTask.Exception);
+                    if (IsObservableAuthRejection(connectionTask.Exception))
+                        return ConnectionAttemptResult.AuthRejected;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Connection attempt canceled for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint);
+            }
+            catch (HubException ex)
+            {
+                _logger.LogError("{class}[{guid}] {method} SignalR HubException during connection attempt to endpoint: {endpoint}. Error: {error}",
+                    nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "{class}[{guid}] {method} Connection attempt failed for endpoint: {endpoint}. Error: {error}",
+                    nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint, ex.Message);
+                if (IsObservableAuthRejection(ex))
+                    return ConnectionAttemptResult.AuthRejected;
+            }
+
+            return ConnectionAttemptResult.Failed;
+        }
+
+        /// <summary>
+        /// True when the attempt's exception tree carries an OBSERVABLE HTTP 401/403 — i.e. an
+        /// <see cref="HttpRequestException"/> whose <c>StatusCode</c> is Unauthorized/Forbidden
+        /// (oauth-client-error-hygiene 02 §C3.4). Best-effort by design: on the netstandard2.1
+        /// (Unity) TFM <see cref="HttpRequestException"/> has no <c>StatusCode</c> property (it was
+        /// added in .NET 5) and message-text matching is FORBIDDEN on every TFM, so this always
+        /// returns false there — an auth failure at negotiate degrades to the ordinary failure
+        /// branch, still bounded by the credential provider's dead-family verdict (C3.1).
+        /// </summary>
+        /// <summary>
+        /// Surface a <see cref="CredentialScopeException"/> (the credential provider refused to send the account token
+        /// to a non-loopback Custom host) as an error carrying its own actionable message, not buried in an
+        /// AggregateException warning.
+        /// </summary>
+        void LogCredentialScopeRefusal(Exception? exception)
+        {
+            var refusal = FindCredentialScopeRefusal(exception);
+            if (refusal != null)
+                _logger.LogError("{class}[{guid}] {method} {message}",
+                    nameof(ConnectionManager), _guid, nameof(AttemptConnection), refusal.Message);
+        }
+
+        internal static CredentialScopeException? FindCredentialScopeRefusal(Exception? exception)
+        {
+            // AggregateException.InnerException is its first inner exception, which is where StartAsync puts it.
+            for (var depth = 0; exception != null && depth <= 8; depth++, exception = exception.InnerException)
+            {
+                if (exception is CredentialScopeException refusal)
+                    return refusal;
+            }
+            return null;
+        }
+
+        private static bool IsObservableAuthRejection(Exception? exception)
+        {
+#if NETSTANDARD2_1
+            _ = exception;
+            return false;
+#else
+            static bool Walk(Exception? ex, int depth)
+            {
+                if (ex == null || depth > 8)
+                    return false;
+                if (ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden })
+                    return true;
+                if (ex is AggregateException aggregate)
+                {
+                    foreach (var inner in aggregate.InnerExceptions)
+                    {
+                        if (Walk(inner, depth + 1))
+                            return true;
+                    }
+                    return false;
+                }
+                return Walk(ex.InnerException, depth + 1);
+            }
+            return Walk(exception, 0);
+#endif
+        }
+
+        protected virtual async Task WaitBeforeRetry(CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+                return;
+
+            _logger.LogTrace("{class}[{guid}] {method} Waiting 5 seconds before retry for endpoint: {endpoint}",
+                nameof(ConnectionManager), _guid, nameof(WaitBeforeRetry), Endpoint);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Ignore cancellation during delay
+            }
+            catch (ObjectDisposedException)
+            {
+                // Ignore disposal during delay
+            }
+        }
+    }
+}

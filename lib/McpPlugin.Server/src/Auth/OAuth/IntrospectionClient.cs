@@ -1,0 +1,191 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+#nullable enable
+using System;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+
+namespace com.RedPand.MCP.Plugin.Server.Auth.OAuth
+{
+    /// <summary>
+    /// Default <see cref="IIntrospectionClient"/> (mcp-authorize b2). Caches active/inactive
+    /// answers for <see cref="_cacheTtl"/> (60 s) keyed by a SHA-256 of the token (the raw token is
+    /// never used as a dictionary key), and fails closed: any transport/HTTP/parse error yields
+    /// <see cref="AuthorizationUnavailableException"/> and is NOT cached, so a transient outage self-heals
+    /// on the next request.
+    /// </summary>
+    public sealed class IntrospectionClient : IIntrospectionClient
+    {
+        private readonly IntrospectionPost _post;
+        private readonly Func<DateTimeOffset> _now;
+        private readonly TimeSpan _cacheTtl;
+        private readonly ILogger? _logger;
+        private readonly ConcurrentDictionary<string, CacheEntry> _cache = new ConcurrentDictionary<string, CacheEntry>();
+
+        public static readonly TimeSpan DefaultCacheTtl = TimeSpan.FromSeconds(60);
+
+        // Hard bound on cached entries. Cache values are only useful for one TTL window, so this
+        // caps memory even under a flood of distinct opaque tokens (each token hashes to a unique
+        // key). Without it the dictionary would grow without bound (entries were only expired on
+        // read, never removed).
+        private const int MaxCacheEntries = 4096;
+
+        public IntrospectionClient(
+            IntrospectionPost post,
+            Func<DateTimeOffset>? now = null,
+            TimeSpan? cacheTtl = null,
+            ILogger? logger = null)
+        {
+            _post = post ?? throw new ArgumentNullException(nameof(post));
+            _now = now ?? (() => DateTimeOffset.UtcNow);
+            _cacheTtl = cacheTtl ?? DefaultCacheTtl;
+            _logger = logger;
+        }
+
+        public async Task<IntrospectionResult> IntrospectAsync(string token, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrEmpty(token))
+                return IntrospectionResult.Inactive;
+
+            var key = Hash(token);
+            var now = _now();
+
+            if (_cache.TryGetValue(key, out var entry) && now - entry.CachedAt < _cacheTtl)
+                return entry.Result;
+
+            string? json;
+            try
+            {
+                json = await _post(token, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException) || !cancellationToken.IsCancellationRequested)
+            {
+                _logger?.LogWarning(ex, "Token introspection failed; failing closed.");
+                throw new AuthorizationUnavailableException("Token introspection is unavailable.", ex);
+            }
+
+            if (json == null)
+                throw new AuthorizationUnavailableException("Token introspection returned no response.");
+
+            if (!TryParse(json, out var result))
+                throw new AuthorizationUnavailableException("Token introspection returned a malformed response.");
+
+            // Bound the cache: opportunistically drop expired entries when full, and if it is still
+            // full (extreme churn within one TTL window) skip caching this result — correctness is
+            // unaffected (the next request simply re-introspects).
+            if (_cache.Count >= MaxCacheEntries)
+            {
+                PruneExpired(now);
+                if (_cache.Count >= MaxCacheEntries)
+                    return result;
+            }
+
+            _cache[key] = new CacheEntry(result, now);
+            return result;
+        }
+
+        private void PruneExpired(DateTimeOffset now)
+        {
+            foreach (var kvp in _cache)
+            {
+                if (now - kvp.Value.CachedAt >= _cacheTtl)
+                    _cache.TryRemove(kvp.Key, out _);
+            }
+        }
+
+        private static bool TryParse(string json, out IntrospectionResult result)
+        {
+            result = IntrospectionResult.Inactive;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (root.ValueKind != JsonValueKind.Object)
+                    return false;
+
+                if (!root.TryGetProperty("active", out var activeProp)
+                    || (activeProp.ValueKind != JsonValueKind.True && activeProp.ValueKind != JsonValueKind.False))
+                    return false;
+                var active = activeProp.ValueKind == JsonValueKind.True;
+
+                if (!active)
+                {
+                    result = IntrospectionResult.Inactive;
+                    return true;
+                }
+
+                string? sub = root.TryGetProperty("sub", out var subProp) && subProp.ValueKind == JsonValueKind.String
+                    ? subProp.GetString() : null;
+                string? scope = root.TryGetProperty("scope", out var scopeProp) && scopeProp.ValueKind == JsonValueKind.String
+                    ? scopeProp.GetString() : null;
+                DateTimeOffset? exp = root.TryGetProperty("exp", out var expProp) && expProp.ValueKind == JsonValueKind.Number
+                    && expProp.TryGetInt64(out var expUnix)
+                    ? DateTimeOffset.FromUnixTimeSeconds(expUnix) : (DateTimeOffset?)null;
+
+                string? tokenType = root.TryGetProperty("token_type", out var typeProp) && typeProp.ValueKind == JsonValueKind.String
+                    ? typeProp.GetString() : null;
+
+                // Project keys (project-keys contract §3) carry the pin their authority is bound to. A pin
+                // member that is present but not a string / not a well-formed v2 pin is fail-closed: the
+                // token must never be read as an unbound (account-wide) credential.
+                string? projectPin = null;
+                if (root.TryGetProperty(ProjectPinMember, out var pinProp))
+                {
+                    projectPin = pinProp.ValueKind == JsonValueKind.String ? NormalizeProjectPin(pinProp.GetString()) : null;
+                    if (projectPin == null)
+                    {
+                        result = IntrospectionResult.Inactive;
+                        return true;
+                    }
+                }
+
+                result = new IntrospectionResult(true, sub, scope, exp, projectPin, tokenType);
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>The RFC 7662 extension member carrying a project key's bound pin (contract §3).</summary>
+        public const string ProjectPinMember = "agd_project_pin";
+
+        /// <summary>Lower-cases and validates a v2 project pin (exactly 8 hex chars); null when malformed.</summary>
+        internal static string? NormalizeProjectPin(string? pin)
+            => pin != null && pin.Length == ProjectKeyPinLength && McpSessionTokenMiddleware.IsHex(pin) ? pin.ToLowerInvariant() : null;
+
+        /// <summary>A project key is bound to a v2 pin: exactly 8 hex chars (<c>ProjectIdentity.PinLength</c> client-side).</summary>
+        private const int ProjectKeyPinLength = 8;
+
+        private static string Hash(string token)
+        {
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+            return Convert.ToHexString(bytes);
+        }
+
+        private readonly struct CacheEntry
+        {
+            public IntrospectionResult Result { get; }
+            public DateTimeOffset CachedAt { get; }
+            public CacheEntry(IntrospectionResult result, DateTimeOffset cachedAt)
+            {
+                Result = result;
+                CachedAt = cachedAt;
+            }
+        }
+    }
+}

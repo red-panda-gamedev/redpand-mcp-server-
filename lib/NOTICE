@@ -1,0 +1,9 @@
+RedPand MCP plugin library
+Copyright 2026 RedPand
+
+This directory holds a modified copy of MCP-Plugin-dotnet
+(https://github.com/IvanMurzak/MCP-Plugin-dotnet, commit 38c79c31, version 8.19.0),
+Copyright (c) 2025 Ivan Murzak, licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Changes: namespace com.IvanMurzak.McpPlugin renamed to com.RedPand.MCP.Plugin, own assembly
+and package names, the MCP entry name "redpand", and the removal of the ai-game.dev cloud features.

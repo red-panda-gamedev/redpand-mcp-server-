@@ -1,0 +1,269 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Logging;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public partial class ConnectionManager : IConnectionManager, IAsyncDisposable
+    {
+        public async Task Disconnect(CancellationToken cancellationToken = default)
+        {
+            if (_isDisposed.Value)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect));
+                return; // already disposed
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method} called.",
+                nameof(ConnectionManager), _guid, nameof(Disconnect));
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} canceled before it gets started.",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect));
+                return;
+            }
+
+            // Cancel the internal token to stop any ongoing connection attempts
+            _disconnectRequested.OnNext(R3.Unit.Default);
+            CancelInternalToken(dispose: false);
+            _continueToReconnect.Value = false;
+
+            try
+            {
+                _logger.LogDebug("{class}[{guid}] {method} acquiring gate.",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect));
+
+                await _gate.WaitAsync(cancellationToken);
+
+                _logger.LogDebug("{class}[{guid}] {method} acquired gate.",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect));
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} canceled while waiting for gate for endpoint: {endpoint}",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect), Endpoint);
+                return;
+            }
+
+            try
+            {
+                await DisconnectInternal(cancellationToken);
+            }
+            finally
+            {
+                _logger.LogDebug("{class}[{guid}] {method} releasing gate.",
+                    nameof(ConnectionManager), _guid, nameof(Disconnect));
+                _gate.Release();
+            }
+        }
+
+        /// <summary>
+        /// Immediately disconnects without waiting for async cleanup.
+        /// Use this during assembly reload or other critical shutdown scenarios.
+        /// Fully synchronous — no Tasks are spawned, safe for domain reload.
+        /// </summary>
+        public void DisconnectImmediate()
+        {
+            if (_isDisposed.Value)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectImmediate));
+                return; // already disposed
+            }
+
+            // Cancel the internal token to stop any ongoing connection attempts
+            _disconnectRequested.OnNext(R3.Unit.Default);
+            CancelInternalToken(dispose: false);
+            _continueToReconnect.Value = false;
+
+            // Try to acquire gate for thread safety, but don't wait long during emergency shutdown
+            var acquiredGate = _gate.Wait(TimeSpan.FromSeconds(1));
+            try
+            {
+                _logger.LogDebug("{class}[{guid}] {method} Gate acquired: {acquired}",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectImmediate), acquiredGate);
+
+                DisconnectImmediateCore();
+            }
+            finally
+            {
+                if (acquiredGate)
+                {
+                    _logger.LogDebug("{class}[{guid}] {method} Releasing gate.",
+                        nameof(ConnectionManager), _guid, nameof(DisconnectImmediate));
+                    _gate.Release();
+                }
+                else
+                {
+                    _logger.LogWarning("{class}[{guid}] {method} Could not acquire gate within timeout. Proceeding without gate protection.",
+                        nameof(ConnectionManager), _guid, nameof(DisconnectImmediate));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Synchronous core of the immediate disconnect path.
+        /// Uses non-blocking gate attempts (TimeSpan.Zero) so it never deadlocks
+        /// when called from a thread that has a SynchronizationContext (e.g. Unity main thread).
+        /// </summary>
+        private void DisconnectImmediateCore()
+        {
+            if (_isDisposed.Value)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectImmediateCore));
+                return;
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method}.",
+                nameof(ConnectionManager), _guid, nameof(DisconnectImmediateCore));
+
+            // Non-blocking gate attempt. If Connect currently holds _ongoingConnectionGate
+            // (Wait returns false), skip the null write entirely — Connect's finally block always
+            // runs with CancellationToken.None and will clear _ongoingConnectionTask itself once
+            // the cancellation (signalled above by CancelInternalToken) causes it to complete.
+            // Writing the field outside the gate would be an unprotected race.
+            var acquiredOngoingGate = _ongoingConnectionGate.Wait(TimeSpan.Zero);
+            if (acquiredOngoingGate)
+            {
+                _ongoingConnectionTask = null;
+                _ongoingFirstOutcomeTask = null;
+                _ongoingConnectionGate.Release();
+            }
+            else
+            {
+                _logger.LogWarning("{class}[{guid}] {method} Could not acquire ongoingConnectionGate (held by another thread). " +
+                    "Connect's finally block will clear _ongoingConnectionTask after cancellation propagates.",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectImmediateCore));
+            }
+
+            var tempHubConnection = ClearConnectionState();
+            if (tempHubConnection == null)
+                return;
+
+            _logger.LogDebug("{class}[{guid}] {method} Performing immediate disconnect without waiting for cleanup.",
+                nameof(ConnectionManager), _guid, nameof(DisconnectImmediateCore));
+
+            // Background-dispatched disposal (no longer pure fire-and-forget). The disposal runs on the
+            // thread pool (Task.Run) with ConfigureAwait(false) so its continuations never capture the
+            // caller's SynchronizationContext — a later WaitForImmediateTeardown() can therefore
+            // bounded-block on _pendingImmediateTeardown from the editor/unload thread without deadlocking.
+            // This lets a reload/AssemblyLoadContext-unload path ensure the transport's threads/handles
+            // (HttpClient pool timer, WebSocket receive loop) are actually released before the unload
+            // (addressing godotengine/godot#78513). Exceptions are swallowed inside the task — this is an
+            // emergency path (domain reload) where unobserved failures are intentional.
+            var conn = tempHubConnection;
+            _pendingImmediateTeardown = Task.Run(async () =>
+            {
+                try { await conn.DisposeAsync().ConfigureAwait(false); }
+                catch { /* emergency reload path: swallow — unobserved exceptions are intentional here */ }
+            });
+        }
+
+        /// <summary>
+        /// Bounded-block until the most recent <see cref="DisconnectImmediate"/>'s background HubConnection
+        /// disposal completes, so a caller on a reload/AssemblyLoadContext-unload thread can ensure the
+        /// transport's threads/handles (HttpClient pool timer, WebSocket receive loop) are released before the
+        /// unload — addressing godotengine/godot#78513. The disposal runs on the thread pool (Task.Run), so
+        /// blocking here does NOT deadlock even when called from a thread with a captured SynchronizationContext
+        /// (e.g. the editor main thread). Returns true if the disposal completed within <paramref name="timeout"/>
+        /// (or nothing was pending); false on timeout/error.
+        /// </summary>
+        public bool WaitForImmediateTeardown(TimeSpan timeout)
+        {
+            var pending = _pendingImmediateTeardown;
+            if (pending == null) return true;
+            try { return pending.Wait(timeout); }
+            catch { return false; }
+        }
+
+        private async Task DisconnectInternal(CancellationToken cancellationToken)
+        {
+            if (_isDisposed.Value)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} called but already disposed, ignored.",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectInternal));
+                return; // already disposed
+            }
+
+            _logger.LogDebug("{class}[{guid}] {method}.",
+                 nameof(ConnectionManager), _guid, nameof(DisconnectInternal));
+
+            // Clear the ongoing connection task to prevent new Connect calls from waiting for it
+            await _ongoingConnectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            _ongoingConnectionTask = null;
+            _ongoingFirstOutcomeTask = null;
+            _ongoingConnectionGate.Release();
+
+            var tempHubConnection = ClearConnectionState();
+            if (tempHubConnection == null)
+                return;
+
+            // For graceful disconnect, use proper async cleanup
+            await DisconnectGracefulAsync(tempHubConnection, cancellationToken);
+        }
+
+        /// <summary>
+        /// Clears all hub connection state fields and returns the active HubConnection (or null).
+        /// The caller is responsible for disposing the returned connection in the appropriate manner
+        /// (sync fire-and-forget for immediate shutdown; async for graceful disconnect).
+        /// </summary>
+        private HubConnection? ClearConnectionState()
+        {
+            hubConnectionLogger?.Dispose();
+            hubConnectionObservable?.Dispose();
+
+            hubConnectionLogger = null;
+            hubConnectionObservable = null;
+
+            // Update state immediately to prevent reconnection attempts
+            _connectionState.Value = HubConnectionState.Disconnected;
+
+            var tempHubConnection = _hubConnection.CurrentValue;
+            _hubConnection.Value = null;
+
+            return tempHubConnection;
+        }
+
+        private async Task DisconnectGracefulAsync(HubConnection hubConnection, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await hubConnection.StopAsync(cancellationToken).ConfigureAwait(false);
+                await hubConnection.DisposeAsync().ConfigureAwait(false);
+                _logger.LogDebug("{class}[{guid}] {method} HubConnection stopped and disposed successfully.",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectGracefulAsync));
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning("{class}[{guid}] {method} HubConnection stop was canceled: {message}",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectGracefulAsync), ex.Message);
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogError("{class}[{guid}] {method} Invalid operation while stopping HubConnection: {message}\n{stackTrace}",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectGracefulAsync), ex.Message, ex.StackTrace);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogCritical("{class}[{guid}] {method} Unexpected error while stopping HubConnection: {message}\n{stackTrace}",
+                    nameof(ConnectionManager), _guid, nameof(DisconnectGracefulAsync), ex.Message, ex.StackTrace);
+                throw;
+            }
+        }
+    }
+}

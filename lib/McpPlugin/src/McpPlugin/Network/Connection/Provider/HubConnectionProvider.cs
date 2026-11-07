@@ -1,0 +1,143 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+#if NET5_0_OR_GREATER
+using System.Net.Http;
+#endif
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
+using com.IvanMurzak.ReflectorNet;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public class HubConnectionProvider : IHubConnectionProvider
+    {
+        private readonly ILogger _logger;
+        private readonly Reflector _reflector;
+        private readonly IServiceProvider _serviceProvider;
+
+        public HubConnectionProvider(ILogger<HubConnection> logger, Reflector reflector, IServiceProvider serviceProvider)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _reflector = reflector ?? throw new ArgumentNullException(nameof(reflector));
+            _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+        }
+
+        public Task<HubConnection> CreateConnectionAsync(string endpoint)
+        {
+            _logger.LogInformation($"Creating HubConnection to {endpoint}");
+
+            try
+            {
+                var connectionConfig = _serviceProvider.GetRequiredService<IOptions<ConnectionConfig>>().Value;
+
+                var url = BuildHubUrl(connectionConfig, endpoint, _serviceProvider.GetService<Common.Version>()?.Environment);
+
+                var hubConnectionBuilder = new HubConnectionBuilder()
+                    .WithUrl(url, options =>
+                    {
+                        // Credential-provider callback (mcp-authorize b7): fetches the current, auto-refreshed
+                        // account JWT on every (re)connect. Null provider ⇒ anonymous (none-mode local server).
+                        // SignalR places this token in the Authorization header for both the negotiate request
+                        // and the WebSocket upgrade — the server reads it there (never a query param).
+                        // Assign the credential-provider delegate directly (null ⇒ a constant null-token
+                        // provider for an anonymous none-mode connection). SignalR invokes the delegate on
+                        // every (re)connect, so a proactively-refreshed JWT is always fetched fresh — no
+                        // wrapping lambda needed.
+                        options.AccessTokenProvider = connectionConfig.CredentialProvider
+                            ?? (() => Task.FromResult<string?>(null));
+
+#if NET5_0_OR_GREATER
+                        // OPT-IN transport CONNECT timeout (ConnectionConfig.ConnectTimeoutSeconds > 0): make an
+                        // unreachable / black-holed endpoint fail in a few seconds instead of hanging ~30s on the OS
+                        // TCP connect. With the opt-in bounded reconnect (MaxConsecutiveConnectionFailures), this lets
+                        // an unreachable server settle quickly into idle-Disconnected instead of keeping a long
+                        // negotiate in-flight — a recurring godotengine/godot#78513 hot-reload pin for a collectible-
+                        // ALC consumer (the Godot addon opts in). Default (0) leaves the framework default, so
+                        // Unity/Unreal are unchanged. SocketsHttpHandler is a .NET Core type (absent on the
+                        // netstandard2.1 / Unity target), so this is .NET-Core-only.
+                        var connectTimeoutSeconds = connectionConfig.ConnectTimeoutSeconds;
+                        if (connectTimeoutSeconds > 0)
+                        {
+                            options.HttpMessageHandlerFactory = inner =>
+                            {
+                                if (inner is SocketsHttpHandler sockets)
+                                    sockets.ConnectTimeout = TimeSpan.FromSeconds(connectTimeoutSeconds);
+                                return inner;
+                            };
+                        }
+#endif
+                    })
+                    // Quick jittered first retry (a graceful server shutdown during a deploy is
+                    // usually over in a second or two), then the historical 10 s × 3.
+                    .WithAutomaticReconnect(new FastFirstRetryPolicy(TimeSpan.FromSeconds(10), laterRetries: 3))
+                    .WithKeepAliveInterval(TimeSpan.FromSeconds(30))
+                    .WithServerTimeout(TimeSpan.FromMinutes(5))
+                    .AddJsonProtocol(options => SignalR_JsonConfiguration.ConfigureJsonSerializer(_reflector, options))
+                    .ConfigureLogging(logging =>
+                    {
+                        logging.ClearProviders();
+                        logging.AddProvider(CreateForwardLoggerProvider(_logger, connectionConfig));
+                        logging.SetMinimumLevel(LogLevel.Trace);
+                    });
+
+                var hubConnection = hubConnectionBuilder.Build();
+
+                return Task.FromResult(hubConnection);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to create HubConnection. Exception: {ex.Message}");
+                if (ex.InnerException != null)
+                    _logger.LogError($"Inner Exception: {ex.InnerException.Message}");
+                if (ex is TypeInitializationException tie && tie.InnerException != null)
+                    _logger.LogError($"TypeInitializer Inner Exception: {tie.InnerException}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// The hub URL with its non-secret query parameters: the instance metadata (mcp-authorize b7), so the
+        /// server can register this editor session in its account+instance pairing plane (b3), and the
+        /// plugin's role. The credential (JWT) itself NEVER goes in the query: it is presented via
+        /// AccessTokenProvider (the Authorization header).
+        /// </summary>
+        internal static string BuildHubUrl(ConnectionConfig connectionConfig, string endpoint, string? environment)
+        {
+            var baseUrl = connectionConfig.Host + endpoint;
+            var url = connectionConfig.InstanceMetadata?.AppendToUrl(baseUrl) ?? baseUrl;
+            return url
+                + (url.IndexOf('?') < 0 ? "?" : "&")
+                + Consts.MCP.Server.HubQuery.ClientRole + "=" + ClientRoles.ToWire(EffectiveRole(connectionConfig, environment));
+        }
+
+        /// <summary>
+        /// <see cref="ConnectionConfig.ClientRole"/>, or <see cref="ClientRole.Runtime"/> when the handshake
+        /// <paramref name="environment"/> marks a runtime (<see cref="ClientRoles.RuntimeEnvironmentSuffix"/>): a
+        /// host that tells its game build apart only by that suffix (the Godot runtime) keeps working unchanged.
+        /// </summary>
+        internal static ClientRole EffectiveRole(ConnectionConfig connectionConfig, string? environment)
+            => connectionConfig.ClientRole == ClientRole.Runtime || ClientRoles.FromEnvironment(environment) == ClientRole.Runtime
+                ? ClientRole.Runtime
+                : ClientRole.Editor;
+
+        /// <summary>
+        /// Builds the logger provider that forwards SignalR's internal logs to the host logger, appending
+        /// the host-supplied <see cref="ConnectionConfig.ConnectionErrorHint"/> (if any) after errors.
+        /// </summary>
+        internal static ForwardLoggerProvider CreateForwardLoggerProvider(ILogger logger, ConnectionConfig connectionConfig)
+            => new ForwardLoggerProvider(logger, additionalErrorMessage: connectionConfig.ConnectionErrorHint);
+    }
+}

@@ -1,0 +1,105 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Model;
+using ModelContextProtocol.Protocol;
+
+namespace com.RedPand.MCP.Plugin.Server
+{
+    public static class ExtensionsTool
+    {
+        static readonly NLog.Logger _logger = NLog.LogManager.GetCurrentClassLogger();
+
+        public static CallToolResult SetError(this CallToolResult target, string message)
+        {
+            if (target == null)
+                throw new ArgumentNullException(nameof(target));
+
+            target.IsError = true;
+            target.Content ??= new List<ModelContextProtocol.Protocol.ContentBlock>(1);
+
+            var content = new TextContentBlock()
+            {
+                Text = message
+            };
+
+            if (target.Content.Count == 0)
+                target.Content.Add(content);
+            else
+                target.Content[0] = content;
+
+            return target;
+        }
+
+        public static ListToolsResult SetError(this ListToolsResult target, string message)
+        {
+            if (target == null)
+                throw new ArgumentNullException(nameof(target));
+
+            target.Tools = new List<Tool>();
+
+            return target;
+        }
+
+        public static Tool ToTool(this ResponseListTool response)
+        {
+            if (_logger.IsTraceEnabled)
+            {
+                _logger.Trace("Converting {type} to Tool: {Name}", nameof(ResponseListTool), response.Name);
+                _logger.Trace(JsonSerializer.Serialize(response));
+            }
+            return new Tool()
+            {
+                Name = response.Name,
+                // Mirrored to the top-level `title` (MCP 2025-06-18) as well as `annotations.title`, so clients
+                // reading either field see the same display name.
+                Title = response.Title,
+                Description = response.Description,
+                InputSchema = response.InputSchema,
+                OutputSchema = response.OutputSchema,
+                Annotations = new()
+                {
+                    Title = response.Title,
+                    ReadOnlyHint = response.ReadOnlyHint,
+                    DestructiveHint = response.DestructiveHint,
+                    IdempotentHint = response.IdempotentHint,
+                    OpenWorldHint = response.OpenWorldHint
+                },
+                // Annotate disabled primitives with `_meta.enabled = false` so trusted
+                // internal clients (which receive the unfiltered list) can tell which
+                // entries the user has turned off plugin-side. Untrusted clients never
+                // receive disabled tools so the field never reaches them.
+                // Tools additionally carry `skillDescription` / `skillBody` when the tool
+                // declares them AND the caller opted in to skill metadata, so such a client
+                // can build a tool catalog without calling every tool's schema while callers
+                // that never read those keys are not charged the payload — see
+                // ExtensionsListMeta.BuildToolMeta.
+                Meta = ExtensionsListMeta.BuildToolMeta(response)
+            };
+        }
+
+        public static CallToolResult ToCallToolResult(this ResponseCallTool response) => new CallToolResult()
+        {
+            IsError = response.Status == ResponseStatus.Error,
+            Content = response.Content
+                .Select(x => x.ToContent())
+                .ToList(),
+            StructuredContent = response.StructuredContent != null
+                ? JsonSerializer.SerializeToElement(response.StructuredContent)
+                : null
+        };
+    }
+}

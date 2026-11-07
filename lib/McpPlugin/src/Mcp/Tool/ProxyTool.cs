@@ -1,0 +1,193 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common.Model;
+
+namespace com.RedPand.MCP.Plugin
+{
+    /// <summary>
+    /// An <see cref="IRunTool"/> whose JSON schemas are supplied externally at runtime and whose body is an
+    /// async delegate, rather than a reflected method. This is the building block for hosts that define their
+    /// tool set dynamically (e.g. a sidecar that mirrors an external editor's tool manifest): the
+    /// <see cref="InputSchema"/>/<see cref="OutputSchema"/> arrive as plain <see cref="JsonNode"/>s and the
+    /// <see cref="Run"/> implementation forwards the raw arguments to the supplied <c>handler</c>.
+    ///
+    /// <para>
+    /// Register a proxy tool against a built plugin via
+    /// <c>plugin.McpManager.ToolManager.AddTool(name, proxyTool)</c> (which fires the tools-updated /
+    /// list-changed notification), and remove it via <c>RemoveTool(name)</c>. To toggle visibility after
+    /// registration, call <c>IToolManager.SetToolVisible(name, visible)</c> (which fires the list-changed
+    /// notification) rather than setting <see cref="Visible"/> directly — a direct set updates the tool but
+    /// leaves connected clients with a stale listing.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Thread-safety:</b> the tool manager's backing store is not synchronized, so a host must serialize
+    /// runtime tool-set mutations (<c>AddTool</c>/<c>RemoveTool</c>) with respect to listing and dispatch;
+    /// mutating the tool set concurrently with enumeration is not supported.
+    /// </para>
+    /// </summary>
+    public sealed class ProxyTool : IRunTool
+    {
+        private readonly Func<string, IReadOnlyDictionary<string, JsonElement>?, CancellationToken, Task<ResponseCallTool>> _handler;
+        private int? _cachedTokenCount;
+        private int? _cachedSkillMetadataTokenCount;
+
+        public string Name { get; }
+        public string? Title { get; }
+        public string? Description { get; }
+        public string? SkillDescription { get; }
+        public string? SkillBody { get; }
+        public JsonNode? InputSchema { get; }
+        public JsonNode? OutputSchema { get; }
+        public bool? ReadOnlyHint { get; }
+        public bool? DestructiveHint { get; }
+        public bool? IdempotentHint { get; }
+        public bool? OpenWorldHint { get; }
+
+        /// <summary>
+        /// Whether this tool is listed in <c>tools/list</c>. Settable so a host can show or hide a runtime tool;
+        /// hidden tools are left out of the visible-tools view by the tool manager but still run through
+        /// <c>tools/call</c>. Defaults to <see langword="true"/>.
+        /// <para>
+        /// For post-registration toggling prefer <c>IToolManager.SetToolVisible(name, visible)</c>: it both
+        /// flips this flag and fires the list-changed notification, whereas setting this property directly
+        /// leaves connected clients with a stale listing.
+        /// </para>
+        /// </summary>
+        public bool Visible { get; set; } = true;
+
+        /// <summary>Old name of <see cref="Visible"/>.</summary>
+        [Obsolete("Renamed to Visible" + VisibilityRename.Note)]
+        public bool Enabled { get => Visible; set => Visible = value; }
+
+        /// <summary>
+        /// Semantic token count for this tool, computed once (then cached) from the same chars/4 approximation
+        /// used by <see cref="RunTool"/> via the shared <see cref="ToolTokenCount.Calculate"/> helper. Covers
+        /// the description AND the published skill metadata (<see cref="SkillDescription"/> /
+        /// <see cref="SkillBody"/>); <see cref="SkillMetadataTokenCount"/> is that payload's share of it.
+        /// </summary>
+        public int TokenCount
+        {
+            get
+            {
+                if (_cachedTokenCount.HasValue)
+                    return _cachedTokenCount.Value;
+
+                try
+                {
+                    _cachedTokenCount = ToolTokenCount.Calculate(Name, Title, Description, SkillDescription, SkillBody, InputSchema, OutputSchema);
+                }
+                catch
+                {
+                    // Mirror RunTool.CalculateTokenCount's resilience: a tool whose externally supplied schema
+                    // fails to serialize must not poison IToolManager.VisibleToolsTokenCount, which sums
+                    // TokenCount over every visible tool. ProxyTool has no logger, so the fallback is silent.
+                    _cachedTokenCount = 0;
+                }
+                return _cachedTokenCount.Value;
+            }
+        }
+
+        /// <summary>
+        /// The portion of <see cref="TokenCount"/> contributed by <see cref="SkillDescription"/> /
+        /// <see cref="SkillBody"/>, including their JSON key overhead. Computed once (then cached) from the
+        /// same helper <see cref="RunTool"/> uses. The two inputs are get-only and assigned in the
+        /// constructor, so — exactly like <see cref="TokenCount"/> — the cached value can never go stale.
+        /// </summary>
+        public int SkillMetadataTokenCount
+        {
+            get
+            {
+                if (_cachedSkillMetadataTokenCount.HasValue)
+                    return _cachedSkillMetadataTokenCount.Value;
+
+                try
+                {
+                    _cachedSkillMetadataTokenCount = ToolTokenCount.CalculateSkillMetadata(Name, Title, Description, SkillDescription, SkillBody, InputSchema, OutputSchema);
+                }
+                catch
+                {
+                    // Same silent resilience as TokenCount above: a breakdown must never be able to poison
+                    // IToolManager.VisibleToolsSkillMetadataTokenCount.
+                    _cachedSkillMetadataTokenCount = 0;
+                }
+                return _cachedSkillMetadataTokenCount.Value;
+            }
+        }
+
+        /// <summary>
+        /// Creates a runtime/proxy tool.
+        /// </summary>
+        /// <param name="name">Unique tool name. Required.</param>
+        /// <param name="title">Human-readable title. Optional.</param>
+        /// <param name="description">Tool description shown to the AI client. Optional.</param>
+        /// <param name="skillDescription">Optional concise skill blurb. Feeds the SKILL.md YAML
+        /// <c>description:</c> field AND the <c>tools/list</c> <c>_meta.skillDescription</c> key,
+        /// which reaches callers that opted in with <c>X-McpPlugin-Skill-Meta: 1</c>. Optional.</param>
+        /// <param name="skillBody">Optional long-form skill markdown. Feeds the SKILL.md body AND
+        /// the <c>tools/list</c> <c>_meta.skillBody</c> key, which reaches callers that opted in
+        /// with <c>X-McpPlugin-Skill-Meta: 1</c> — a payload gate, not a security boundary, so
+        /// keep it to content that is safe to publish. Optional.</param>
+        /// <param name="inputSchema">JSON Schema for the tool inputs, supplied externally. Optional.</param>
+        /// <param name="outputSchema">JSON Schema for the tool output, supplied externally. Optional.</param>
+        /// <param name="readOnlyHint">MCP read-only behavior hint. Optional.</param>
+        /// <param name="destructiveHint">MCP destructive behavior hint. Optional.</param>
+        /// <param name="idempotentHint">MCP idempotency behavior hint. Optional.</param>
+        /// <param name="openWorldHint">MCP open-world behavior hint. Optional.</param>
+        /// <param name="handler">Async delegate invoked on each call with the request id, raw named arguments, and a cancellation token. Required.</param>
+        /// <exception cref="ArgumentNullException">Thrown when <paramref name="name"/> or <paramref name="handler"/> is <see langword="null"/>.</exception>
+        public ProxyTool(
+            string name,
+            string? title,
+            string? description,
+            string? skillDescription,
+            string? skillBody,
+            JsonNode? inputSchema,
+            JsonNode? outputSchema,
+            bool? readOnlyHint,
+            bool? destructiveHint,
+            bool? idempotentHint,
+            bool? openWorldHint,
+            Func<string, IReadOnlyDictionary<string, JsonElement>?, CancellationToken, Task<ResponseCallTool>> handler)
+        {
+            Name = name ?? throw new ArgumentNullException(nameof(name));
+            Title = title;
+            Description = description;
+            SkillDescription = skillDescription;
+            SkillBody = skillBody;
+            // Detach the externally supplied schemas via a round-trip clone so the proxy owns immutable,
+            // self-consistent copies: post-registration mutation of the caller's live node cannot desync the
+            // listed schema (re-read per listing) from the cached TokenCount (computed once), and the same node
+            // can safely back more than one tool. Round-trip (rather than JsonNode.DeepClone) keeps this working
+            // on the netstandard2.1 leg whose System.Text.Json predates DeepClone (STJ 8).
+            InputSchema = inputSchema is null ? null : JsonNode.Parse(inputSchema.ToJsonString());
+            OutputSchema = outputSchema is null ? null : JsonNode.Parse(outputSchema.ToJsonString());
+            ReadOnlyHint = readOnlyHint;
+            DestructiveHint = destructiveHint;
+            IdempotentHint = idempotentHint;
+            OpenWorldHint = openWorldHint;
+            _handler = handler ?? throw new ArgumentNullException(nameof(handler));
+        }
+
+        /// <summary>
+        /// Dispatches the call to the supplied async handler. The raw <paramref name="namedParameters"/> are
+        /// forwarded unmodified — the handler owns argument interpretation against the external schema.
+        /// </summary>
+        public Task<ResponseCallTool> Run(string requestId, IReadOnlyDictionary<string, JsonElement>? namedParameters, CancellationToken cancellationToken = default)
+            => _handler(requestId, namedParameters, cancellationToken);
+    }
+}

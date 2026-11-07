@@ -71,22 +71,11 @@
     9.3.1: McpPlugin 8.15.0 (a tool that throws on the request's content is HTTP 422 on the direct endpoint, not 500).
     9.3.2: no pin change; first release carrying the MCP registry ownership proof (mcp-name in the NuGet readme, Docker label).
   -->
-  <ItemGroup Condition="'$(UseLocalMcpPlugin)' != 'true'">
+  <ItemGroup>
     <PackageReference Include="com.IvanMurzak.ReflectorNet" Version="5.5.1" />
-    <PackageReference Include="com.IvanMurzak.McpPlugin.Server" Version="8.19.0" />
-    <!--
-      Base McpPlugin package: the McpPlugin.Server package does NOT depend on it, but it hosts the
-      shared AI-agent configurator registry (AiAgentConfiguratorRegistry) + ProjectIdentity /
-      ProjectMarker primitives the `configure` subcommand consumes from the terminal. Pinned in
-      lockstep with McpPlugin.Server.
-    -->
-    <PackageReference Include="com.IvanMurzak.McpPlugin" Version="8.19.0" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalMcpPlugin)' == 'true'">
-    <ProjectReference Include="./../MCP-Plugin-dotnet/McpPlugin.Server/McpPlugin.Server.csproj" />
-    <ProjectReference Include="./../MCP-Plugin-dotnet/McpPlugin/McpPlugin.csproj" />
-    <ProjectReference Include="./../ReflectorNet/ReflectorNet/ReflectorNet.csproj" />
+    <!-- The plugin library lives in lib/ (Apache-2.0, see lib/NOTICE): the server and the Unity plugin use one build. -->
+    <ProjectReference Include="./lib/McpPlugin.Server/McpPlugin.Server.csproj" />
+    <ProjectReference Include="./lib/McpPlugin/McpPlugin.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -129,6 +118,10 @@
   -->
   <ItemGroup>
     <Compile Remove="tests/**/*.cs" />
+    <Compile Remove="lib/**/*.cs" />
+    <Content Remove="lib/**/*" />
+    <EmbeddedResource Remove="lib/**/*" />
+    <None Remove="lib/**/*" />
     <Content Remove="tests/**/*" />
     <EmbeddedResource Remove="tests/**/*" />
     <None Remove="tests/**/*" />

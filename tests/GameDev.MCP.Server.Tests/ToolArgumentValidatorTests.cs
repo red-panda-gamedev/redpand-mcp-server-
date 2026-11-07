@@ -11,7 +11,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.Json;
-using com.IvanMurzak.McpPlugin.Server.Tools;
+using com.RedPand.MCP.Plugin.Server.Tools;
 using Xunit;
 
 namespace com.RedPand.MCP.Server.Tests

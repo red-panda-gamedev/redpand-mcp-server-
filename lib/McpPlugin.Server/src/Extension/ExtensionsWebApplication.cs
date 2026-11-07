@@ -1,0 +1,95 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Utils;
+using com.RedPand.MCP.Plugin.Server.Api;
+using com.RedPand.MCP.Plugin.Server.Auth;
+using com.RedPand.MCP.Plugin.Server.Transport;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace com.RedPand.MCP.Plugin.Server
+{
+    public static class ExtensionsWebApplication
+    {
+        /// <summary>How long the server waits for a plugin to acknowledge a WebSocket close.</summary>
+        internal static readonly TimeSpan PluginWebSocketCloseTimeout = TimeSpan.FromSeconds(2);
+
+        public static WebApplication UseMcpPluginServer(this WebApplication app, DataArguments dataArguments)
+        {
+            if (app == null)
+                throw new ArgumentNullException(nameof(app));
+
+            if (dataArguments == null)
+                throw new ArgumentNullException(nameof(dataArguments));
+
+            var forwardedHeadersOptions = new ForwardedHeadersOptions
+            {
+                ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+            };
+            forwardedHeadersOptions.KnownNetworks.Clear();
+            forwardedHeadersOptions.KnownProxies.Clear();
+            app.UseForwardedHeaders(forwardedHeadersOptions);
+
+            // Origin validation (MCP transport MUST — mcp-authorize b2): reject a present-but-non-
+            // allowed Origin with 403 on the MCP endpoint AND the SignalR negotiate path, in ALL
+            // auth modes (the DNS-rebinding defense; runs before routing/auth).
+            app.UseMiddleware<Security.OriginValidationMiddleware>();
+
+            // Setup routing ----------------------------------------------------
+            app.UseRouting();
+
+            // Setup auth -------------------------------------------------------
+            app.UseAuthentication();
+            app.UseMiddleware<McpSessionTokenMiddleware>();
+            app.UseAuthorization();
+
+            // Setup SignalR ----------------------------------------------------
+            app.MapHub<McpServerHub>(Consts.Hub.RemoteApp, options =>
+            {
+                options.Transports = HttpTransports.All;
+                // SignalR closes every plugin connection when the host starts stopping; wait at most
+                // this long (default 5 s) for a plugin to acknowledge the WebSocket close, so a
+                // deploy is not held up by a plugin that does not answer and plugins reconnect to the
+                // new instance sooner.
+                options.WebSockets.CloseTimeout = PluginWebSocketCloseTimeout;
+                // 16 MB pipe buffers — large enough to carry a screenshot tool result
+                // (image base64 inside a JSON envelope) without dropping it in transit, raised
+                // from the previous 4 MB which silently truncated high-resolution captures.
+                // Plugin-side capture tools cap their own resolution so payloads stay within this bound.
+                options.ApplicationMaxBufferSize = 1024 * 1024 * 16; // 16 MB
+                options.TransportMaxBufferSize = 1024 * 1024 * 16; // 16 MB
+            });
+
+            // Delegate MCP endpoint mapping to transport layer
+            var transport = app.Services.GetRequiredService<ITransportLayer>();
+            transport.ConfigureApp(app, dataArguments);
+
+            // Setup direct tool call API (POST /api/tools/{name}, GET /api/tools)
+            app.MapDirectToolCallApi(dataArguments);
+            // Setup project-pinned direct tool call API (POST /p/{pin}/api/tools/{name}, GET /p/{pin}/api/tools) —
+            // deterministic multi-project dispatch (design 06 / zero-config-engine-connect b1). Same handlers +
+            // auth gate as the unpinned group; the pin (captured by McpSessionTokenMiddleware) makes resolution
+            // strict-by-project.
+            app.MapPinnedDirectToolCallApi(dataArguments);
+            // Setup system tool API (POST /api/system-tools/{name}) — internal tools not exposed to MCP
+            app.MapSystemToolApi(dataArguments);
+            // Setup project-pinned system tool API (POST /p/{pin}/api/system-tools/{name}, GET /p/{pin}/api/system-tools) —
+            // same pinned/unpinned pairing as the tool routes above; reverses design 06 D15 (see SystemToolEndpoints).
+            app.MapPinnedSystemToolApi(dataArguments);
+
+            return app;
+        }
+    }
+}

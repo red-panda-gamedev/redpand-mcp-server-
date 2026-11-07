@@ -10,9 +10,9 @@
 
 using System;
 using System.Collections.Generic;
-using com.IvanMurzak.McpPlugin.Common.Utils;      // DataArguments
-using com.IvanMurzak.McpPlugin.Server.Auth.OAuth; // UrlNormalization
-using com.IvanMurzak.McpPlugin.Server.Security;    // OriginValidationOptions
+using com.RedPand.MCP.Plugin.Common.Utils;      // DataArguments
+using com.RedPand.MCP.Plugin.Server.Auth.OAuth; // UrlNormalization
+using com.RedPand.MCP.Plugin.Server.Security;    // OriginValidationOptions
 
 namespace com.RedPand.MCP.Server.Startup
 {

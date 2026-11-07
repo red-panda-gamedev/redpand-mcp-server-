@@ -19,7 +19,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
-using com.IvanMurzak.McpPlugin.Common.Utils;
+using com.RedPand.MCP.Plugin.Common.Utils;
 using Microsoft.AspNetCore.Builder;
 using Xunit;
 
@@ -90,7 +90,7 @@ namespace com.RedPand.MCP.Server.Tests.Harness
         }
 
         public FakePlugin NewPlugin(string name, string environment, string? declaredRole = null,
-            Func<FakePlugin, com.IvanMurzak.McpPlugin.Common.Model.RequestCallTool, Task<com.IvanMurzak.McpPlugin.Common.Model.ResponseData<com.IvanMurzak.McpPlugin.Common.Model.ResponseCallTool>>>? onCall = null,
+            Func<FakePlugin, com.RedPand.MCP.Plugin.Common.Model.RequestCallTool, Task<com.RedPand.MCP.Plugin.Common.Model.ResponseData<com.RedPand.MCP.Plugin.Common.Model.ResponseCallTool>>>? onCall = null,
             string? apiVersion = null)
             => new FakePlugin(Port, name, environment, declaredRole, onCall, apiVersion);
 

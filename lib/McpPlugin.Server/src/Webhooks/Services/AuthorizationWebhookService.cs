@@ -1,0 +1,228 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Server.Webhooks.Models;
+using com.RedPand.MCP.Plugin.Server.Auth;
+using Microsoft.Extensions.Logging;
+
+namespace com.RedPand.MCP.Plugin.Server.Webhooks.Services
+{
+    public class AuthorizationWebhookService : IAuthorizationWebhookService
+    {
+        static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+        readonly WebhookOptions _options;
+        readonly IHttpClientFactory _httpClientFactory;
+        readonly ILogger _logger;
+
+        public AuthorizationWebhookService(
+            WebhookOptions options,
+            IHttpClientFactory httpClientFactory,
+            ILogger<AuthorizationWebhookService> logger)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        }
+
+        public async Task<bool> AuthorizeAiAgentAsync(
+            string connectionId,
+            string? bearerToken,
+            string? remoteIpAddress,
+            string? userAgent,
+            string? requestPath,
+            CancellationToken cancellationToken = default)
+        {
+            var request = new AuthorizationRequest
+            {
+                EventType = "authorization.ai-agent",
+                Timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                ConnectionId = connectionId,
+                ClientType = "ai-agent",
+                BearerToken = bearerToken,
+                TokenFingerprint = FingerprintToken(bearerToken),
+                RemoteIpAddress = remoteIpAddress,
+                UserAgent = userAgent,
+                RequestPath = requestPath
+            };
+
+            return await SendAuthorizationRequestAsync(request, cancellationToken);
+        }
+
+        public async Task<bool> AuthorizePluginAsync(
+            string connectionId,
+            string? bearerToken,
+            string? clientName,
+            string? clientVersion,
+            CancellationToken cancellationToken = default,
+            string? remoteIpAddress = null,
+            string? userAgent = null,
+            string? requestPath = null)
+        {
+            var request = new AuthorizationRequest
+            {
+                EventType = "authorization.plugin",
+                Timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                ConnectionId = connectionId,
+                ClientType = "plugin",
+                BearerToken = bearerToken,
+                TokenFingerprint = FingerprintToken(bearerToken),
+                RemoteIpAddress = remoteIpAddress,
+                UserAgent = userAgent,
+                RequestPath = requestPath,
+                ClientName = clientName,
+                ClientVersion = clientVersion
+            };
+
+            return await SendAuthorizationRequestAsync(request, cancellationToken);
+        }
+
+        async Task<bool> SendAuthorizationRequestAsync(
+            AuthorizationRequest request,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var client = _httpClientFactory.CreateClient("webhook");
+
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(_options.TimeoutMs);
+
+                var jsonBody = JsonSerializer.Serialize(request);
+
+                // Compute HMAC-SHA256 signature if a webhook token is configured
+                var signedRequest = _options.HasToken
+                    ? request with { HmacSignature = ComputeHmacSha256(jsonBody, _options.TokenValue!) }
+                    : request;
+
+                var signedJsonBody = _options.HasToken
+                    ? JsonSerializer.Serialize(signedRequest)
+                    : jsonBody;
+
+                using var content = new StringContent(signedJsonBody, Encoding.UTF8, "application/json");
+                using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.AuthorizationWebhookUrl)
+                {
+                    Content = content
+                };
+
+                if (_options.HasToken)
+                    httpRequest.Headers.TryAddWithoutValidation(_options.HeaderName, _options.TokenValue);
+
+                using var response = await client.SendAsync(httpRequest, cts.Token);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning(
+                        "Authorization webhook returned non-2xx status {StatusCode} for {EventType}. ConnectionId: {ConnectionId}, ClientType: {ClientType}, RemoteIp: {RemoteIpAddress}, UserAgent: {UserAgent}, RequestPath: {RequestPath}, TokenFingerprint: {TokenFingerprint}",
+                        response.StatusCode, request.EventType, request.ConnectionId,
+                        request.ClientType, request.RemoteIpAddress, request.UserAgent,
+                        request.RequestPath, request.TokenFingerprint);
+                    return Unavailable();
+                }
+
+                var responseBody = await response.Content.ReadAsStringAsync(cts.Token);
+                var authResponse = JsonSerializer.Deserialize<AuthorizationResponse>(responseBody, _jsonOptions);
+
+                using var responseDocument = JsonDocument.Parse(responseBody);
+                var hasAllowed = responseDocument.RootElement.ValueKind == JsonValueKind.Object
+                    && System.Linq.Enumerable.Any(responseDocument.RootElement.EnumerateObject(),
+                        property => string.Equals(property.Name, "allowed", StringComparison.OrdinalIgnoreCase)
+                            && (property.Value.ValueKind == JsonValueKind.True || property.Value.ValueKind == JsonValueKind.False));
+                if (authResponse == null || !hasAllowed)
+                {
+                    _logger.LogWarning(
+                        "Authorization webhook response could not be parsed for {EventType}",
+                        request.EventType);
+                    return Unavailable();
+                }
+
+                if (!authResponse.Allowed)
+                {
+                    _logger.LogWarning(
+                        "Authorization webhook denied {EventType}: {Reason}. ConnectionId: {ConnectionId}, ClientType: {ClientType}, RemoteIp: {RemoteIpAddress}, UserAgent: {UserAgent}, RequestPath: {RequestPath}, TokenFingerprint: {TokenFingerprint}, ClientName: {ClientName}, ClientVersion: {ClientVersion}",
+                        request.EventType, authResponse.Reason ?? "(no reason provided)",
+                        request.ConnectionId, request.ClientType, request.RemoteIpAddress,
+                        request.UserAgent, request.RequestPath, request.TokenFingerprint,
+                        request.ClientName, request.ClientVersion);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Timeout from linked CTS, not external cancellation
+                _logger.LogWarning(
+                    "Authorization webhook timeout for {EventType}. ConnectionId: {ConnectionId}, ClientType: {ClientType}, RemoteIp: {RemoteIpAddress}, UserAgent: {UserAgent}, RequestPath: {RequestPath}, TokenFingerprint: {TokenFingerprint}",
+                    request.EventType, request.ConnectionId, request.ClientType,
+                    request.RemoteIpAddress, request.UserAgent, request.RequestPath,
+                    request.TokenFingerprint);
+                return Unavailable();
+            }
+            catch (AuthorizationUnavailableException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Authorization webhook error for {EventType}. ConnectionId: {ConnectionId}, ClientType: {ClientType}, RemoteIp: {RemoteIpAddress}, UserAgent: {UserAgent}, RequestPath: {RequestPath}, TokenFingerprint: {TokenFingerprint}",
+                    request.EventType, request.ConnectionId, request.ClientType,
+                    request.RemoteIpAddress, request.UserAgent, request.RequestPath,
+                    request.TokenFingerprint);
+                return Unavailable();
+            }
+        }
+
+        bool Unavailable()
+        {
+            if (_options.AuthorizationFailOpen)
+                return true;
+            throw new AuthorizationUnavailableException("Authorization webhook is unavailable.");
+        }
+
+        static string ComputeHmacSha256(string payload, string secret)
+        {
+            var keyBytes = Encoding.UTF8.GetBytes(secret);
+            var payloadBytes = Encoding.UTF8.GetBytes(payload);
+
+            using var hmac = new HMACSHA256(keyBytes);
+            var hash = hmac.ComputeHash(payloadBytes);
+            return "sha256=" + BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+
+        static string? FingerprintToken(string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
+            var value = token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? token.Substring("Bearer ".Length).Trim()
+                : token.Trim();
+            if (string.IsNullOrEmpty(value))
+                return null;
+
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+            return Convert.ToHexString(bytes).Substring(0, 16).ToLowerInvariant();
+        }
+    }
+}

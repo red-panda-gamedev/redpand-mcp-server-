@@ -1,0 +1,56 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Server.Transport;
+using Shouldly;
+using Xunit;
+
+namespace com.RedPand.MCP.Plugin.Server.Tests
+{
+    public class TransportFactoryTests
+    {
+        private readonly TransportFactory _factory = new();
+
+        [Fact]
+        public void Create_Stdio_ReturnsStdioTransportLayer()
+        {
+            // Act
+            var transport = _factory.Create(Consts.MCP.Server.TransportMethod.stdio);
+
+            // Assert
+            transport.ShouldBeOfType<StdioTransportLayer>();
+            transport.TransportMethod.ShouldBe(Consts.MCP.Server.TransportMethod.stdio);
+        }
+
+        [Fact]
+        public void Create_StreamableHttp_ReturnsStreamableHttpTransportLayer()
+        {
+            // Act
+            var transport = _factory.Create(Consts.MCP.Server.TransportMethod.streamableHttp);
+
+            // Assert
+            transport.ShouldBeOfType<StreamableHttpTransportLayer>();
+            transport.TransportMethod.ShouldBe(Consts.MCP.Server.TransportMethod.streamableHttp);
+        }
+
+        [Fact]
+        public void Create_Unknown_ThrowsArgumentException()
+        {
+            // Act
+            Action act = () => _factory.Create(Consts.MCP.Server.TransportMethod.unknown);
+
+            // Assert
+            Should.Throw<ArgumentException>(act)
+                .Message.ShouldContain("Unsupported transport method");
+        }
+    }
+}

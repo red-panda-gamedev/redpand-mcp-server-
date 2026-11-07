@@ -1,0 +1,444 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.IvanMurzak.ReflectorNet;
+using Microsoft.Extensions.Logging.Abstractions;
+using Shouldly;
+using Xunit;
+using Version = com.RedPand.MCP.Plugin.Common.Version;
+
+namespace com.RedPand.MCP.Plugin.Tests.Mcp
+{
+    [Collection("McpPlugin")]
+    public class ToolErrorClassificationTests
+    {
+        [Fact]
+        public async Task RunCallTool_NullRequest_IsBadRequest()
+        {
+            var manager = ToolManager();
+
+            var response = await manager.RunCallTool(null!);
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.BadRequest);
+        }
+
+        [Fact]
+        public async Task RunCallTool_MissingName_IsBadRequest()
+        {
+            var manager = ToolManager();
+
+            var response = await manager.RunCallTool(new RequestCallTool("request-1", "", EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.BadRequest);
+        }
+
+        [Fact]
+        public async Task RunCallTool_UnknownTool_IsNotFound()
+        {
+            var manager = ToolManager();
+
+            var response = await manager.RunCallTool(new RequestCallTool("request-1", "missing", EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.NotFound);
+        }
+
+        [Theory]
+        [MemberData(nameof(ExceptionCases))]
+        public async Task RunCallTool_ClassifiesExceptions(Exception exception, ResponseErrorKind expected)
+        {
+            var manager = ToolManager(new ThrowingTool(exception));
+
+            var response = await manager.RunCallTool(new RequestCallTool("request-1", ThrowingTool.ToolName, EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(expected);
+        }
+
+        // A tool that throws a plain exception failed on what the request asked for (Unity's script-execute
+        // throws Exception("Compilation failed...") for the agent's invalid code): BadRequest + 422, so the
+        // direct HTTP endpoint answers 422, not 500. BadRequest (not a new kind) keeps older servers working.
+        [Fact]
+        public async Task RunCallTool_ReflectedToolExecutionFailure_IsUnprocessable()
+        {
+            var reflector = new Reflector();
+            var builder = new McpPluginBuilder(new Version());
+            var method = typeof(ReflectedThrowingTool).GetMethod(nameof(ReflectedThrowingTool.Throw));
+            builder.WithTool("reflected-throw", "Reflected Throw", typeof(ReflectedThrowingTool), method!);
+            var plugin = builder.Build(reflector);
+
+            var response = await plugin.McpManager.ToolManager!.RunCallTool(
+                new RequestCallTool("request-1", "reflected-throw", EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.BadRequest);
+            response.HttpStatusCode.ShouldBe(ResponseCallTool.UnprocessableStatusCode);
+            response.Value!.HttpStatusCode.ShouldBe(422);
+            response.Value.GetMessage().ShouldBe("Tool execution failed for 'Reflected Throw': reflected tool failed");
+        }
+
+        [Theory]
+        [MemberData(nameof(ToolBodyExceptionCases))]
+        public async Task RunTool_NamedRun_ClassifiesToolBodyExceptions(string exception, bool async, bool frameworkFault)
+        {
+            var tool = ToolBodyThrowingTool(async);
+
+            var response = await tool.Run("request-1", ToolBodyArgs(exception), CancellationToken.None);
+
+            AssertToolBodyFailure(response, exception, frameworkFault);
+        }
+
+        [Theory]
+        [MemberData(nameof(ToolBodyExceptionCases))]
+        public async Task RunTool_PositionalRun_ClassifiesToolBodyExceptions(string exception, bool async, bool frameworkFault)
+        {
+            var tool = ToolBodyThrowingTool(async);
+
+            var response = await tool.Run("request-1", CancellationToken.None, exception);
+
+            AssertToolBodyFailure(response, exception, frameworkFault);
+        }
+
+        public static IEnumerable<object[]> ToolBodyExceptionCases()
+        {
+            foreach (var async in new[] { false, true })
+            {
+                // the request's content: HTTP 422
+                yield return new object[] { nameof(Exception), async, false };
+                yield return new object[] { nameof(InvalidOperationException), async, false };
+                yield return new object[] { nameof(NotSupportedException), async, false };
+                yield return new object[] { nameof(ApplicationException), async, false };
+                yield return new object[] { "Custom", async, false };
+                // a fault in the plugin: HTTP 500
+                yield return new object[] { nameof(NullReferenceException), async, true };
+                yield return new object[] { nameof(IndexOutOfRangeException), async, true };
+                yield return new object[] { nameof(InvalidCastException), async, true };
+                yield return new object[] { nameof(NotImplementedException), async, true };
+                yield return new object[] { nameof(MissingMethodException), async, true };
+                yield return new object[] { nameof(TaskCanceledException), async, true };
+            }
+        }
+
+        static void AssertToolBodyFailure(ResponseCallTool response, string exception, bool frameworkFault)
+        {
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.RequestID.ShouldBe("request-1");
+            response.GetMessage().ShouldBe($"Tool execution failed for 'Tool Body Throw': thrown {exception}");
+            if (frameworkFault)
+            {
+                response.ErrorKind.ShouldBe(ResponseErrorKind.Internal);
+                response.HttpStatusCode.ShouldBeNull();
+            }
+            else
+            {
+                response.ErrorKind.ShouldBe(ResponseErrorKind.BadRequest);
+                response.HttpStatusCode.ShouldBe(422);
+            }
+        }
+
+        // A host that cannot serve the call right now (Unity compiling, a reflector not built yet) is Unavailable, HTTP 503.
+        // Only a tool that declares it did nothing gets the not-executed status (503) a server re-sends; the plain kind
+        // carries no status, so a server never re-sends a call that may have done part of its work.
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(true, true)]
+        public async Task RunTool_ToolUnavailable_IsUnavailable(bool async, bool notExecuted)
+        {
+            var method = typeof(ReflectedThrowingTool).GetMethod(async
+                ? nameof(ReflectedThrowingTool.UnavailableAsync)
+                : nameof(ReflectedThrowingTool.Unavailable));
+            var tool = RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "unavailable", method!, title: "Unavailable");
+            var args = new Dictionary<string, JsonElement> { ["notExecuted"] = JsonSerializer.SerializeToElement(notExecuted) };
+
+            var named = await tool.Run("request-1", args, CancellationToken.None);
+            var positional = await tool.Run("request-1", CancellationToken.None, notExecuted);
+
+            foreach (var response in new[] { named, positional })
+            {
+                response.Status.ShouldBe(ResponseStatus.Error);
+                response.RequestID.ShouldBe("request-1");
+                response.ErrorKind.ShouldBe(ResponseErrorKind.Unavailable);
+                response.HttpStatusCode.ShouldBe(notExecuted ? ResponseCallTool.NotExecutedStatusCode : (int?)null);
+                response.GetMessage().ShouldBe("Tool execution failed for 'Unavailable': scripts are compiling");
+            }
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task RunCallTool_ToolUnavailable_IsNotExecutedOnlyWhenDeclared(bool notExecuted)
+        {
+            var tools = new ToolRunnerCollection(new Reflector(), NullLogger.Instance);
+            tools["unavailable"] = RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "unavailable",
+                typeof(ReflectedThrowingTool).GetMethod(nameof(ReflectedThrowingTool.Unavailable))!);
+            var manager = new McpToolManager(NullLogger<McpToolManager>.Instance, new Reflector(), tools);
+            var args = new Dictionary<string, JsonElement> { ["notExecuted"] = JsonSerializer.SerializeToElement(notExecuted) };
+
+            var response = await manager.RunCallTool(new RequestCallTool("request-1", "unavailable", args));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.Unavailable);
+            ResponseCallTool.IsNotExecuted(response).ShouldBe(notExecuted);
+        }
+
+        // Thrown from a blocking wait (Task.Wait / .Result) it arrives in an AggregateException: still Unavailable.
+        [Fact]
+        public async Task RunTool_ToolUnavailableInsideAggregate_IsUnavailable()
+        {
+            var method = typeof(ReflectedThrowingTool).GetMethod(nameof(ReflectedThrowingTool.UnavailableInAggregate));
+            var tool = RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "unavailable", method!);
+
+            var response = await tool.Run("request-1", EmptyArgs, CancellationToken.None);
+
+            response.ErrorKind.ShouldBe(ResponseErrorKind.Unavailable);
+            response.HttpStatusCode.ShouldBeNull();
+            response.GetMessage().ShouldBe("Tool execution failed for 'UnavailableInAggregate': scripts are compiling");
+        }
+
+        // A hand-written IRunTool that throws it goes through the managers' own mapping: the same kind and status.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Managers_ThrownToolUnavailable_IsUnavailable_NotExecutedOnlyWhenDeclared(bool notExecuted)
+        {
+            var exception = new ToolUnavailableException("compiling", notExecuted);
+            var request = new RequestCallTool("request-1", ThrowingTool.ToolName, EmptyArgs);
+
+            foreach (var response in new[]
+            {
+                await ToolManager(new ThrowingTool(exception)).RunCallTool(request),
+                await SystemToolManager(new ThrowingTool(exception)).RunSystemTool(request),
+            })
+            {
+                response.ErrorKind.ShouldBe(ResponseErrorKind.Unavailable);
+                ResponseCallTool.IsNotExecuted(response).ShouldBe(notExecuted);
+                response.HttpStatusCode.ShouldBe(notExecuted ? ResponseCallTool.NotExecutedStatusCode : (int?)null);
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(FrameworkFaultCases))]
+        public void IsFrameworkFault_ClassifiesThroughWrappers(Exception exception, bool expected)
+        {
+            RunTool.IsFrameworkFault(exception).ShouldBe(expected);
+            RunTool.IsFrameworkFault(new TargetInvocationException(exception)).ShouldBe(expected);
+            RunTool.IsFrameworkFault(new TargetInvocationException(new AggregateException(exception))).ShouldBe(expected);
+        }
+
+        public static IEnumerable<object[]> FrameworkFaultCases()
+        {
+            yield return new object[] { new ObjectDisposedException("service"), true };
+            yield return new object[] { new TypeInitializationException("T", null), true };
+            yield return new object[] { new FileLoadException("assembly"), true };
+            yield return new object[] { new BadImageFormatException("image"), true };
+            yield return new object[] { new InvalidProgramException("il"), true };
+            yield return new object[] { new TimeoutException("main thread"), true };
+            yield return new object[] { new MissingFieldException("field"), true };
+            // the classification looks at the thrown exception, not at an inner one it carries
+            yield return new object[] { new InvalidOperationException("failed", new NullReferenceException()), false };
+            yield return new object[] { new AggregateException(new NullReferenceException(), new Exception()), false };
+            yield return new object[] { new FormatException("bad input"), false };
+        }
+
+        // A tool that succeeded but returned something the plugin cannot serialize is our fault, not the request's.
+        [Fact]
+        public async Task RunTool_UnserializableResult_IsInternal()
+        {
+            var method = typeof(ReflectedThrowingTool).GetMethod(nameof(ReflectedThrowingTool.Unserializable));
+            var tool = RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "unserializable", method!);
+
+            var response = await tool.Run("request-1", EmptyArgs, CancellationToken.None);
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.Internal);
+            response.HttpStatusCode.ShouldBeNull();
+        }
+
+        // Argument binding failures are unchanged: 400 with the binding message, no 422.
+        [Fact]
+        public async Task RunTool_ArgumentBindingFailure_StaysBadRequestWithout422()
+        {
+            var method = typeof(ReflectedThrowingTool).GetMethod(nameof(ReflectedThrowingTool.Typed));
+            var tool = RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "typed", method!, title: "Typed");
+            var args = new Dictionary<string, JsonElement> { ["count"] = JsonSerializer.SerializeToElement("not a number") };
+
+            // 'count' cannot bind: binding fails before the tool body runs
+            var response = await tool.Run("request-1", args, CancellationToken.None);
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.BadRequest);
+            response.HttpStatusCode.ShouldBeNull();
+            response.GetMessage()!.ShouldStartWith("Parameter validation failed for tool 'Typed'");
+        }
+
+        static RunTool ToolBodyThrowingTool(bool async)
+        {
+            var method = typeof(ReflectedThrowingTool).GetMethod(async
+                ? nameof(ReflectedThrowingTool.ThrowNamedAsync)
+                : nameof(ReflectedThrowingTool.ThrowNamed));
+            return RunTool.CreateFromStaticMethod(new Reflector(), NullLogger.Instance, "tool-body-throw", method!, title: "Tool Body Throw");
+        }
+
+        static IReadOnlyDictionary<string, JsonElement> ToolBodyArgs(string exception)
+            => new Dictionary<string, JsonElement> { ["exception"] = JsonSerializer.SerializeToElement(exception) };
+
+        [Fact]
+        public async Task RunSystemTool_UnknownTool_IsNotFound()
+        {
+            var manager = SystemToolManager();
+
+            var response = await manager.RunSystemTool(new RequestCallTool("request-1", "missing", EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(ResponseErrorKind.NotFound);
+        }
+
+        [Theory]
+        [MemberData(nameof(ExceptionCases))]
+        public async Task RunSystemTool_ClassifiesExceptions(Exception exception, ResponseErrorKind expected)
+        {
+            var manager = SystemToolManager(new ThrowingTool(exception));
+
+            var response = await manager.RunSystemTool(new RequestCallTool("request-1", ThrowingTool.ToolName, EmptyArgs));
+
+            response.Status.ShouldBe(ResponseStatus.Error);
+            response.ErrorKind.ShouldBe(expected);
+        }
+
+        public static IEnumerable<object[]> ExceptionCases()
+        {
+            yield return new object[] { new ArgumentException("bad arg"), ResponseErrorKind.BadRequest };
+            yield return new object[] { new FormatException("bad format"), ResponseErrorKind.BadRequest };
+            yield return new object[] { new JsonException("bad json"), ResponseErrorKind.BadRequest };
+            yield return new object[] { new FileNotFoundException("missing file"), ResponseErrorKind.NotFound };
+            yield return new object[] { new DirectoryNotFoundException("missing directory"), ResponseErrorKind.NotFound };
+            yield return new object[] { new KeyNotFoundException("missing key"), ResponseErrorKind.NotFound };
+            yield return new object[] { new InvalidOperationException("bad state"), ResponseErrorKind.Conflict };
+            yield return new object[] { new TimeoutException("too slow"), ResponseErrorKind.Timeout };
+            yield return new object[] { new ToolUnavailableException("compiling"), ResponseErrorKind.Unavailable };
+            yield return new object[] { new ApplicationException("bug"), ResponseErrorKind.Internal };
+        }
+
+        static readonly IReadOnlyDictionary<string, JsonElement> EmptyArgs = new Dictionary<string, JsonElement>();
+
+        static McpToolManager ToolManager(IRunTool? tool = null)
+        {
+            var tools = new ToolRunnerCollection(new Reflector(), NullLogger.Instance);
+            if (tool != null)
+                tools[tool.Name] = tool;
+
+            return new McpToolManager(NullLogger<McpToolManager>.Instance, new Reflector(), tools);
+        }
+
+        static McpSystemToolManager SystemToolManager(IRunTool? tool = null)
+        {
+            var tools = new SystemToolRunnerCollection(new Reflector(), NullLogger.Instance);
+            if (tool != null)
+                tools[tool.Name] = tool;
+
+            return new McpSystemToolManager(NullLogger<McpSystemToolManager>.Instance, tools);
+        }
+
+        sealed class ThrowingTool : IRunTool
+        {
+            public const string ToolName = "throwing";
+            readonly Exception _exception;
+
+            public ThrowingTool(Exception exception)
+            {
+                _exception = exception;
+            }
+
+            public string Name => ToolName;
+            public string? Title => "Throwing";
+            public string? Description => "Throws for tests";
+            public string? SkillDescription => null;
+            public string? SkillBody => null;
+            public JsonNode? InputSchema => JsonNode.Parse("{}");
+            public JsonNode? OutputSchema => JsonNode.Parse("{}");
+            public bool Visible { get; set; } = true;
+            public bool? ReadOnlyHint => null;
+            public bool? DestructiveHint => null;
+            public bool? IdempotentHint => null;
+            public bool? OpenWorldHint => null;
+            public int TokenCount => 0;
+
+            public Task<ResponseCallTool> Run(string requestId, IReadOnlyDictionary<string, JsonElement>? namedParameters, CancellationToken cancellationToken = default)
+                => Task.FromException<ResponseCallTool>(_exception);
+        }
+
+        sealed class ReflectedThrowingTool
+        {
+            public string Throw() => throw new ApplicationException("reflected tool failed");
+
+            public static string ThrowNamed(string exception) => throw Create(exception);
+
+            public static async Task<string> ThrowNamedAsync(string exception)
+            {
+                await Task.Yield();
+                throw Create(exception);
+            }
+
+            public static int Typed(int count) => count;
+
+            public static string Unavailable(bool notExecuted) => throw new ToolUnavailableException("scripts are compiling", notExecuted);
+
+            public static async Task<string> UnavailableAsync(bool notExecuted)
+            {
+                await Task.Yield();
+                throw new ToolUnavailableException("scripts are compiling", notExecuted);
+            }
+
+            public static string UnavailableInAggregate()
+                => Task.Run(new Func<string>(() => throw new ToolUnavailableException("scripts are compiling"))).Result;
+
+            // A delegate: System.Text.Json cannot serialize it.
+            public static Action Unserializable() => () => { };
+
+            static Exception Create(string name)
+            {
+                var message = "thrown " + name;
+                return name switch
+                {
+                    nameof(Exception) => new Exception(message),
+                    nameof(InvalidOperationException) => new InvalidOperationException(message),
+                    nameof(NotSupportedException) => new NotSupportedException(message),
+                    nameof(ApplicationException) => new ApplicationException(message),
+                    "Custom" => new CustomToolException(message),
+                    nameof(NullReferenceException) => new NullReferenceException(message),
+                    nameof(IndexOutOfRangeException) => new IndexOutOfRangeException(message),
+                    nameof(InvalidCastException) => new InvalidCastException(message),
+                    nameof(NotImplementedException) => new NotImplementedException(message),
+                    nameof(MissingMethodException) => new MissingMethodException(message),
+                    nameof(TaskCanceledException) => new TaskCanceledException(message),
+                    _ => throw new ArgumentOutOfRangeException(nameof(name), name, null)
+                };
+            }
+        }
+
+        sealed class CustomToolException : Exception
+        {
+            public CustomToolException(string message) : base(message) { }
+        }
+    }
+}

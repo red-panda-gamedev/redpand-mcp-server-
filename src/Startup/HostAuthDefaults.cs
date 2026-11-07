@@ -9,8 +9,8 @@
 */
 
 using System;
-using com.IvanMurzak.McpPlugin.Common;
-using com.IvanMurzak.McpPlugin.Common.Utils;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Utils;
 
 namespace com.RedPand.MCP.Server.Startup
 {

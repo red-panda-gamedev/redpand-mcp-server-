@@ -1,0 +1,210 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.RedPand.MCP.Plugin.Common.Utils;
+using com.RedPand.MCP.Plugin.Server.Auth;
+using com.RedPand.MCP.Plugin.Server.Strategy;
+using Microsoft.Extensions.Logging;
+using Moq;
+using Shouldly;
+using Xunit;
+
+namespace com.RedPand.MCP.Plugin.Server.Tests
+{
+    [Collection("McpPlugin.Server")]
+    public class NoAuthMcpStrategyTests
+    {
+        private readonly NoAuthMcpStrategy _strategy = new();
+
+        [Fact]
+        public void AuthOption_ReturnsNone()
+        {
+            _strategy.AuthOption.ShouldBe(Consts.MCP.Server.AuthOption.none);
+        }
+
+        [Fact]
+        public void AllowMultipleConnections_ReturnsFalse()
+        {
+            _strategy.AllowMultipleConnections.ShouldBeFalse();
+        }
+
+        [Fact]
+        public void Validate_WithoutToken_DoesNotThrow()
+        {
+            // Arrange
+            var dataArguments = new DataArguments(new string[0]);
+
+            // Act & Assert
+            Should.NotThrow(() => _strategy.Validate(dataArguments));
+        }
+
+        [Fact]
+        public void Validate_WithToken_DoesNotThrow()
+        {
+            // Arrange
+            var dataArguments = new DataArguments(new[] { "token=test-token" });
+
+            // Act & Assert
+            Should.NotThrow(() => _strategy.Validate(dataArguments));
+        }
+
+        [Fact]
+        public void ConfigureAuthentication_WithoutToken_StaysAnonymous()
+        {
+            // Arrange
+            var dataArguments = new DataArguments(new string[0]);
+            var options = new TokenAuthenticationOptions();
+
+            // Act
+            _strategy.ConfigureAuthentication(options, dataArguments);
+
+            // Assert — no-auth mode never runs the OAuth validation path.
+            options.OAuthMode.ShouldBeFalse();
+        }
+
+        [Fact]
+        public void ConfigureAuthentication_WithToken_StaysAnonymous()
+        {
+            // Arrange
+            var dataArguments = new DataArguments(new[] { "token=test-token" });
+            var options = new TokenAuthenticationOptions();
+
+            // Act
+            _strategy.ConfigureAuthentication(options, dataArguments);
+
+            // Assert — no-auth mode never gates the HTTP endpoint, even if a legacy token is supplied
+            // (the shared-token credential path was removed in mcp-authorize b5).
+            options.OAuthMode.ShouldBeFalse();
+        }
+
+        [Fact]
+        public void OnPluginConnected_RegistersTheEditorAtItsHandshake()
+        {
+            // Arrange
+            var logger = new Mock<ILogger>().Object;
+            var connectionId = "conn-local-1";
+            var disconnected = new List<string>();
+
+            // Act: no declared role, so the role (and the routing) waits for the handshake.
+            _strategy.OnPluginConnected(typeof(McpServerHub), connectionId, null, logger,
+                (id, _) => disconnected.Add(id));
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldNotContain(connectionId);
+            _strategy.OnPluginHandshake(typeof(McpServerHub), connectionId, "Godot 4.5", logger,
+                (id, _) => disconnected.Add(id)).ShouldBeTrue();
+
+            // Assert - client should be registered
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldContain(connectionId);
+            disconnected.ShouldBeEmpty();
+
+            // Cleanup
+            _strategy.OnPluginDisconnected(typeof(McpServerHub), connectionId, logger);
+        }
+
+        [Fact]
+        public void OnPluginConnected_DisconnectsTheOlderConnectionOfTheSameRoleOnly()
+        {
+            // Arrange
+            var logger = new Mock<ILogger>().Object;
+            var existingId = "conn-local-existing";
+            var gameId = "conn-local-game";
+            var newId = "conn-local-new";
+            var disconnected = new List<string>();
+            Action<string, string?> disconnect = (id, _) => disconnected.Add(id);
+
+            _strategy.OnPluginConnected(typeof(McpServerHub), existingId, null, ClientRole.Editor, logger, disconnect);
+
+            // Act
+            _strategy.OnPluginConnected(typeof(McpServerHub), gameId, null, ClientRole.Runtime, logger, disconnect);
+            disconnected.ShouldBeEmpty("a game must not evict the editor");
+            _strategy.OnPluginConnected(typeof(McpServerHub), newId, null, ClientRole.Editor, logger, disconnect);
+
+            // Assert
+            disconnected.ShouldBe(new[] { existingId });
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldContain(newId);
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldNotContain(existingId);
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldNotContain(gameId, "only editors are routed while one is connected");
+
+            // Cleanup
+            foreach (var id in new[] { existingId, gameId, newId })
+                _strategy.OnPluginDisconnected(typeof(McpServerHub), id, logger);
+        }
+
+        [Fact]
+        public void OnPluginDisconnected_RemovesClient()
+        {
+            // Arrange
+            var logger = new Mock<ILogger>().Object;
+            var connectionId = "conn-local-remove";
+            ClientUtils.AddClient(typeof(McpServerHub), connectionId, logger);
+
+            // Act
+            _strategy.OnPluginDisconnected(typeof(McpServerHub), connectionId, logger);
+
+            // Assert
+            ClientUtils.GetAllConnectionIds(typeof(McpServerHub)).ShouldNotContain(connectionId);
+        }
+
+        [Fact]
+        public void ShouldNotifySession_AlwaysReturnsTrue()
+        {
+            // no-auth mode broadcasts to all sessions
+            _strategy.ShouldNotifySession("any-connection", "any-session").ShouldBeTrue();
+            _strategy.ShouldNotifySession("conn1", "session2").ShouldBeTrue();
+        }
+
+        [Fact]
+        public void GetClientData_ReturnsFirstAvailable()
+        {
+            // Arrange
+            var sessionTracker = new Mock<IMcpSessionTracker>();
+            var expectedData = new McpClientData { IsConnected = true, ClientName = "test" };
+            sessionTracker.Setup(s => s.GetClientData()).Returns(expectedData);
+
+            // Act
+            var result = _strategy.GetClientData("some-connection", sessionTracker.Object);
+
+            // Assert
+            result.ShouldBeSameAs(expectedData);
+            sessionTracker.Verify(s => s.GetClientData(), Times.Once);
+        }
+
+        [Fact]
+        public void GetServerData_ReturnsFirstAvailable()
+        {
+            // Arrange
+            var sessionTracker = new Mock<IMcpSessionTracker>();
+            var expectedData = new McpServerData { IsAiAgentConnected = true };
+            sessionTracker.Setup(s => s.GetServerData()).Returns(expectedData);
+
+            // Act
+            var result = _strategy.GetServerData("some-connection", sessionTracker.Object);
+
+            // Assert
+            result.ShouldBeSameAs(expectedData);
+            sessionTracker.Verify(s => s.GetServerData(), Times.Once);
+        }
+
+        [Fact]
+        public void ResolveNotificationTarget_AlwaysBroadcasts()
+        {
+            // no-auth mode enforces a single plugin connection (OnPluginConnected disconnects
+            // any other), so Clients.All targets exactly one recipient — broadcast is correct.
+            // Routing token is ignored because there is no per-token mapping in this mode.
+            foreach (var probe in new[] { (string?)null, "", "any-token-value" })
+            {
+                _strategy.ResolveNotificationTarget(probe).Kind.ShouldBe(NotificationTarget.TargetKind.Broadcast);
+            }
+        }
+    }
+}

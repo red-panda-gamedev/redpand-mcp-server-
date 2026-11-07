@@ -1,0 +1,204 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Linq;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Server.Auth;
+using com.RedPand.MCP.Plugin.Common.Hub.Client;
+using com.RedPand.MCP.Plugin.Server.Strategy;
+using com.RedPand.MCP.Plugin.Server.Webhooks.Services;
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
+using R3;
+
+namespace com.RedPand.MCP.Plugin.Server
+{
+    public class BaseHub<T> : Hub<T>, IDisposable
+        where T : class, IClientDisconnectable
+    {
+        protected readonly ILogger _logger;
+        protected readonly IMcpConnectionStrategy _strategy;
+        protected readonly IAuthorizationWebhookService _authorizationWebhookService;
+        protected readonly CompositeDisposable _disposables = new();
+        protected readonly string _guid = Guid.NewGuid().ToString();
+        /// <summary>
+        /// Set to true if the connection is rejected by the authorization webhook.
+        /// This flag prevents subsequent connection setup from executing after Context.Abort() is called.
+        /// Marked volatile to ensure visibility across threads.
+        /// </summary>
+        protected volatile bool _connectionRejected = false;
+
+        /// <summary>
+        /// How long a denied connection stays open after <c>ForceDisconnect</c> is sent, so the frame
+        /// reaches the client before the connection is aborted.
+        /// </summary>
+        internal static readonly TimeSpan ForceDisconnectFlushTime = TimeSpan.FromMilliseconds(250);
+
+        protected BaseHub(ILogger logger, IMcpConnectionStrategy strategy, IAuthorizationWebhookService authorizationWebhookService)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _strategy = strategy ?? throw new ArgumentNullException(nameof(strategy));
+            _authorizationWebhookService = authorizationWebhookService ?? throw new ArgumentNullException(nameof(authorizationWebhookService));
+            _logger.LogTrace("Ctor. {guid}", _guid);
+        }
+
+        public override async Task OnConnectedAsync()
+        {
+            var httpContext = Context.GetHttpContext();
+
+            // OAuth mode (mcp-authorize b2): the hub credential MUST arrive via the Authorization
+            // header only — the ?access_token= query param is NOT honored (it leaks into logs and
+            // referrers). Legacy modes keep the query fallback for backward compatibility.
+            string? token = _strategy.AuthOption == Consts.MCP.Server.AuthOption.oauth
+                ? null
+                : httpContext?.Request.Query["access_token"].FirstOrDefault();
+
+            var remoteIpAddress = GetClientIpAddress(httpContext);
+            var userAgent = httpContext?.Request.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : null;
+            var requestPath = httpContext?.Request.Path.Value;
+            if (string.IsNullOrEmpty(token))
+            {
+                var authHeader = httpContext?.Request.Headers["Authorization"].FirstOrDefault();
+                if (authHeader != null && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                    token = authHeader.Substring("Bearer ".Length).Trim();
+            }
+
+            // Check authorization webhook
+            bool allowed;
+            try
+            {
+                allowed = await _authorizationWebhookService.AuthorizePluginAsync(
+                    connectionId: Context.ConnectionId,
+                    bearerToken: token,
+                    clientName: null,
+                    clientVersion: null,
+                    remoteIpAddress: remoteIpAddress,
+                    userAgent: userAgent,
+                    requestPath: requestPath,
+                    cancellationToken: Context.ConnectionAborted);
+            }
+            catch (AuthorizationUnavailableException ex)
+            {
+                _connectionRejected = true;
+                _logger.LogWarning(ex, "Authorization temporarily unavailable. Closing connection for retry. ConnectionId: {connectionId}.", Context.ConnectionId);
+                // Do not send ForceDisconnect: older clients interpret that as permanent rejection.
+                Context.Abort();
+                return;
+            }
+
+            if (!allowed)
+            {
+                _connectionRejected = true;
+                _logger.LogDebug("{guid} MCP Plugin connection rejected by authorization webhook. ConnectionId: {connectionId}, RemoteIp: {remoteIpAddress}, UserAgent: {userAgent}, RequestPath: {requestPath}.",
+                    _guid, Context.ConnectionId, remoteIpAddress, userAgent, requestPath);
+
+                // Notify the client about the rejection reason before closing.
+                // This allows the client to take specific action (e.g. clear cached tokens).
+                try
+                {
+                    await Clients.Caller.ForceDisconnect("Authorization failed. Token may be missing, invalid, or revoked.");
+
+                    // The send completes once the message is queued, not once it is on the wire, and
+                    // Context.Abort() drops whatever is still queued: in production the client often saw
+                    // only a bare close. A client treats a close WITHOUT ForceDisconnect as transient and
+                    // retries, so give the frame a short, bounded time to flush. The wait ends early when
+                    // the client, having handled ForceDisconnect, closes the connection itself.
+                    await Task.Delay(ForceDisconnectFlushTime, Context.ConnectionAborted);
+                }
+                catch (OperationCanceledException) when (Context.ConnectionAborted.IsCancellationRequested)
+                {
+                    // The client closed first: the frame was delivered (or the connection is gone).
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex,
+                        "{guid} Failed to send ForceDisconnect notification for rejected connection. ConnectionId: {connectionId}.",
+                        _guid, Context.ConnectionId);
+                }
+
+                // Context.Abort() signals SignalR to tear down the connection.
+                // However, the rest of OnConnectedAsync (and overrides in derived classes)
+                // may still execute before SignalR processes the abort. The _connectionRejected
+                // flag acts as a guard so derived hubs can skip their post-connection logic.
+                // SignalR will eventually invoke OnDisconnectedAsync — derived classes should
+                // also check _connectionRejected there to skip cleanup for never-established connections.
+                Context.Abort();
+                return;
+            }
+
+            Action<string, string?> disconnectClient = (id, reason) =>
+            {
+                var client = Clients.Client(id);
+                if (client == null)
+                {
+                    _logger.LogWarning("{guid} ForceDisconnect skipped: no SignalR connection found for ConnectionId: {connectionId}. Client may have already disconnected.", _guid, id);
+                    return;
+                }
+                client.ForceDisconnect(reason);
+            };
+            if (_strategy is IPluginRoleStrategy roles)
+                roles.OnPluginConnected(GetType(), Context.ConnectionId, token, DeclaredRole(httpContext), _logger, disconnectClient);
+            else
+                _strategy.OnPluginConnected(GetType(), Context.ConnectionId, token, _logger, disconnectClient);
+
+            _logger.LogDebug("{guid} MCP Plugin connected. ConnectionId: {connectionId}, Token: {hasToken}.",
+                _guid, Context.ConnectionId, !string.IsNullOrEmpty(token) ? "present" : "absent");
+            await base.OnConnectedAsync();
+        }
+
+        public override Task OnDisconnectedAsync(Exception? exception)
+        {
+            if (_connectionRejected)
+            {
+                _logger.LogDebug("{guid} MCP Plugin disconnected (rejected connection, skipping cleanup). ConnectionId: {connectionId}.", _guid, Context.ConnectionId);
+                return Task.CompletedTask;
+            }
+
+            _logger.LogDebug("{guid} MCP Plugin disconnected. ConnectionId: {connectionId}.", _guid, Context.ConnectionId);
+            _strategy.OnPluginDisconnected(GetType(), Context.ConnectionId, _logger);
+            return base.OnDisconnectedAsync(exception);
+        }
+
+        public virtual new void Dispose()
+        {
+            _logger.LogTrace("Dispose. {0}", _guid);
+            base.Dispose();
+            _disposables.Dispose();
+        }
+
+        /// <summary>The role the plugin declared: hub query <c>client_role</c>, else header <c>X-Client-Role</c>; null when none.</summary>
+        static ClientRole? DeclaredRole(Microsoft.AspNetCore.Http.HttpContext? httpContext)
+        {
+            var request = httpContext?.Request;
+            return request == null
+                ? null
+                : ClientRoles.Parse(request.Query[Consts.MCP.Server.HubQuery.ClientRole].FirstOrDefault())
+                    ?? ClientRoles.Parse(request.Headers[Consts.MCP.Server.ClientRoleHeader].FirstOrDefault());
+        }
+
+        static string? GetClientIpAddress(Microsoft.AspNetCore.Http.HttpContext? httpContext)
+        {
+            if (httpContext == null)
+                return null;
+
+            var forwardedFor = httpContext.Request.Headers["X-Forwarded-For"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(forwardedFor))
+                return forwardedFor.Split(',')[0].Trim();
+
+            var realIp = httpContext.Request.Headers["X-Real-IP"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(realIp))
+                return realIp.Trim();
+
+            return httpContext.Connection.RemoteIpAddress?.ToString();
+        }
+    }
+}

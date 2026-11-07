@@ -1,0 +1,286 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.IvanMurzak.ReflectorNet;
+using com.IvanMurzak.ReflectorNet.Utils;
+using Microsoft.Extensions.Logging;
+using R3;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public class McpToolManager : IToolManager
+    {
+        protected readonly ILogger _logger;
+        protected readonly Reflector _reflector;
+        protected readonly CompositeDisposable _disposables = new();
+        private ulong toolCallsCount = 0;
+
+        readonly ToolRunnerCollection _tools;
+        readonly Subject<Unit> _onToolsUpdated = new();
+
+        public Reflector Reflector => _reflector;
+        public Observable<Unit> OnToolsUpdated => _onToolsUpdated;
+
+        public IEnumerable<IRunTool> GetAllTools() => _tools.Values.ToList();
+        public ulong ToolCallsCount => (ulong)Interlocked.Read(ref Unsafe.As<ulong, long>(ref toolCallsCount));
+
+        public McpToolManager(ILogger<McpToolManager> logger, Reflector reflector, ToolRunnerCollection tools)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _logger.LogTrace("Ctor");
+            _reflector = reflector ?? throw new ArgumentNullException(nameof(reflector));
+            _tools = tools ?? throw new ArgumentNullException(nameof(tools));
+
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                _logger.LogTrace("Registered tools [{0}]:", tools.Count);
+                foreach (var kvp in tools)
+                    _logger.LogTrace("Tool: {0}", kvp.Key);
+            }
+        }
+
+        #region Tools
+        public int VisibleToolsCount => _tools.Count(kvp => kvp.Value.Visible);
+        public int TotalToolsCount => _tools.Count;
+
+        /// <summary>
+        /// Gets the total token count for all visible tools.
+        /// This is calculated as the sum of TokenCount for each visible tool.
+        /// Recalculates on each access but should be performant for typical tool counts.
+        /// </summary>
+        public int VisibleToolsTokenCount => _tools
+            .Where(kvp => kvp.Value.Visible)
+            .Sum(kvp => kvp.Value.TokenCount);
+
+        /// <summary>
+        /// The skill-metadata share of <see cref="VisibleToolsTokenCount"/>, summed over the SAME visible
+        /// tools so the two figures are directly comparable (subtracting one from the other yields the
+        /// pre-skill-metadata catalogue weight).
+        /// </summary>
+        public int VisibleToolsSkillMetadataTokenCount => _tools
+            .Where(kvp => kvp.Value.Visible)
+            .Sum(kvp => kvp.Value.SkillMetadataTokenCount);
+
+        [Obsolete("Renamed to VisibleToolsCount" + VisibilityRename.Note)]
+        public int EnabledToolsCount => VisibleToolsCount;
+        [Obsolete("Renamed to VisibleToolsTokenCount" + VisibilityRename.Note)]
+        public int EnabledToolsTokenCount => VisibleToolsTokenCount;
+        [Obsolete("Renamed to VisibleToolsSkillMetadataTokenCount" + VisibilityRename.Note)]
+        public int EnabledToolsSkillMetadataTokenCount => VisibleToolsSkillMetadataTokenCount;
+
+        private IToolBinding? _toolBinding;
+
+        /// <summary>
+        /// EXPERIMENTAL. The data layer of this manager's reflected tools (<see cref="RunTool.Binding"/>); null = ReflectorNet.
+        /// Applied to every <see cref="RunTool"/> held now and added later; a change re-announces the tool list.
+        /// </summary>
+        public IToolBinding? ToolBinding
+        {
+            get => _toolBinding;
+            set
+            {
+                if (ReferenceEquals(_toolBinding, value)) return;
+                _toolBinding = value;
+                foreach (var runTool in _tools.Values.OfType<RunTool>())
+                    runTool.Binding = value;
+                _onToolsUpdated.OnNext(Unit.Default);
+            }
+        }
+
+        public bool HasTool(string name) => _tools.ContainsKey(name);
+        public bool AddTool(string name, IRunTool runner)
+        {
+            if (HasTool(name))
+            {
+                _logger.LogWarning("Tool with Name '{0}' already exists. Skipping addition.", name);
+                return false;
+            }
+
+            if (runner is RunTool runTool)
+                runTool.Binding = _toolBinding;
+            _tools[name] = runner;
+            _onToolsUpdated.OnNext(Unit.Default);
+            return true;
+        }
+        public bool RemoveTool(string name)
+        {
+            if (!HasTool(name))
+            {
+                _logger.LogWarning("Tool with Name '{0}' not found. Cannot remove.", name);
+                return false;
+            }
+
+            var removed = _tools.Remove(name);
+            if (removed)
+                _onToolsUpdated.OnNext(Unit.Default);
+
+            return removed;
+        }
+        public bool IsToolVisible(string name)
+        {
+            if (!_tools.TryGetValue(name, out var runner))
+            {
+                _logger.LogWarning("Tool with Name '{0}' not found.", name);
+                return false;
+            }
+
+            return runner.Visible;
+        }
+        [Obsolete("Renamed to IsToolVisible" + VisibilityRename.Note)]
+        public bool IsToolEnabled(string name) => IsToolVisible(name);
+        [Obsolete("Renamed to SetToolVisible" + VisibilityRename.Note)]
+        public bool SetToolEnabled(string name, bool enabled) => SetToolVisible(name, enabled);
+        public bool SetToolVisible(string name, bool visible)
+        {
+            if (!_tools.TryGetValue(name, out var runner))
+            {
+                _logger.LogWarning("Tool with Name '{0}' not found.", name);
+                return false;
+            }
+
+            runner.Visible = visible;
+            _onToolsUpdated.OnNext(Unit.Default);
+
+            return true;
+        }
+
+        public Task<ResponseData<ResponseCallTool>> RunCallTool(RequestCallTool data) => RunCallTool(data, default);
+        public async Task<ResponseData<ResponseCallTool>> RunCallTool(RequestCallTool data, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Unsafe.As<ulong, long>(ref toolCallsCount));
+            if (data == null)
+                return ResponseData<ResponseCallTool>.Error(Common.Consts.Guid.Zero, "Tool data is null.", ResponseErrorKind.BadRequest)
+                    .Log(_logger);
+
+            if (string.IsNullOrEmpty(data.Name))
+                return ResponseData<ResponseCallTool>.Error(data.RequestID, "Tool.Name is null.", ResponseErrorKind.BadRequest)
+                    .Log(_logger);
+
+            if (!_tools.TryGetValue(data.Name, out var runner))
+                return ResponseData<ResponseCallTool>.Error(data.RequestID, $"Tool with Name '{data.Name}' not found.", ResponseErrorKind.NotFound)
+                    .Log(_logger);
+            try
+            {
+                if (_logger.IsEnabled(LogLevel.Information))
+                {
+                    var message = data.Arguments == null
+                        ? $"Run tool '{data.Name}' with no parameters."
+                        : $"Run tool '{data.Name}' with parameters[{data.Arguments.Count}]:\n{string.Join(",\n", data.Arguments)}\n";
+                    _logger.LogInformation(message);
+                }
+
+                var result = await runner.Run(data.RequestID, data.Arguments, cancellationToken);
+                if (result == null)
+                    return ResponseData<ResponseCallTool>.Error(data.RequestID, $"Tool '{data.Name}' returned null result.", ResponseErrorKind.Internal)
+                        .Log(_logger);
+
+                result.Log(_logger);
+
+                return result.Pack(data.RequestID);
+            }
+            catch (Exception ex)
+            {
+                return ResponseData<ResponseCallTool>.Error(data.RequestID, $"Failed to run tool '{data.Name}'. Exception: {ex.Message}",
+                        ClassifyException(ex), ToolUnavailableException.StatusCodeOf(ex))
+                    .Log(_logger, $"RunCallTool[{data.Name}]", ex);
+            }
+        }
+
+        static ResponseErrorKind ClassifyException(Exception ex)
+        {
+            if (ex is ToolUnavailableException)
+                return ResponseErrorKind.Unavailable;
+            if (ex is ArgumentException || ex is FormatException || ex is JsonException)
+                return ResponseErrorKind.BadRequest;
+            if (ex is FileNotFoundException || ex is DirectoryNotFoundException || ex is KeyNotFoundException)
+                return ResponseErrorKind.NotFound;
+            if (ex is InvalidOperationException)
+                return ResponseErrorKind.Conflict;
+            if (ex is TimeoutException)
+                return ResponseErrorKind.Timeout;
+
+            return ResponseErrorKind.Internal;
+        }
+
+        public Task<ResponseData<ResponseListTool[]>> RunListTool(RequestListTool data) => RunListTool(data, default);
+        public Task<ResponseData<ResponseListTool[]>> RunListTool(RequestListTool data, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                _logger.LogDebug("Listing tools.");
+                var result = _tools
+                    .Select(kvp =>
+                    {
+                        var response = new ResponseListTool()
+                        {
+                            Name = kvp.Value.Name,
+                            Visible = kvp.Value.Visible,
+                            Title = kvp.Value.Title,
+                            Description = kvp.Value.Description,
+                            SkillDescription = kvp.Value.SkillDescription,
+                            SkillBody = kvp.Value.SkillBody,
+                            InputSchema = kvp.Value.InputSchema.ToJsonElement() ?? Common.Consts.MCP.EmptyInputSchema,
+                            ReadOnlyHint = kvp.Value.ReadOnlyHint,
+                            DestructiveHint = kvp.Value.DestructiveHint,
+                            IdempotentHint = kvp.Value.IdempotentHint,
+                            OpenWorldHint = kvp.Value.OpenWorldHint,
+                            Target = kvp.Value.Target is 0 or Common.ToolTarget.Both ? null : kvp.Value.Target
+                        };
+                        if (kvp.Value.OutputSchema == null)
+                            return response;
+
+                        if (kvp.Value.OutputSchema is not JsonNode jn)
+                            return response;
+
+                        if (jn.GetValueKind() != JsonValueKind.Object)
+                            return response;
+
+                        if (jn[JsonSchema.Type]?.GetValue<string>() != JsonSchema.Object)
+                            return response;
+
+                        response.OutputSchema = jn.ToJsonElement();
+                        return response;
+                    })
+                    .ToArray();
+                _logger.LogDebug("{0} Tools listed.", result.Length);
+
+                return result
+                    .Log(_logger)
+                    .Pack(data.RequestID)
+                    .TaskFromResult();
+            }
+            catch (Exception ex)
+            {
+                // Handle or log the exception as needed
+                return ResponseData<ResponseListTool[]>.Error(data.RequestID, $"Failed to list tools. Exception: {ex}")
+                    .Log(_logger, "RunListTool", ex)
+                    .TaskFromResult();
+            }
+        }
+        #endregion
+
+        public void Dispose()
+        {
+            _disposables.Dispose();
+            _tools.Clear();
+        }
+    }
+}

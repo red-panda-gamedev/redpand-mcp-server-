@@ -1,0 +1,296 @@
+/*
+┌────────────────────────────────────────────────────────────────────────┐
+│  Author: Ivan Murzak (https://github.com/IvanMurzak)                   │
+│  Repository: GitHub (https://github.com/IvanMurzak/MCP-Plugin-dotnet)  │
+│  Copyright (c) 2025 Ivan Murzak                                        │
+│  Licensed under the Apache License, Version 2.0.                       │
+│  See the LICENSE file in the project root for more information.        │
+└────────────────────────────────────────────────────────────────────────┘
+*/
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Common.Hub.Client;
+using com.RedPand.MCP.Plugin.Common.Hub.Server;
+using com.RedPand.MCP.Plugin.Common.Model;
+using com.RedPand.MCP.Plugin.Common.Utils;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using R3;
+using Version = com.RedPand.MCP.Plugin.Common.Version;
+
+namespace com.RedPand.MCP.Plugin
+{
+    public class McpManagerClientHub : BaseHubConnector, IMcpManagerHub
+    {
+        readonly IClientMcpManager _mcpManager;
+
+        /// <summary>
+        /// Incremented each time a live server notification (connect/disconnect) is received.
+        /// Used to detect whether state changed during the async initial-data fetch, so we
+        /// can skip applying a stale snapshot.
+        /// </summary>
+        private volatile int _liveNotificationEpoch = 0;
+
+        public McpManagerClientHub(
+            ILogger<McpManagerClientHub> logger,
+            Version apiVersion,
+            IHubConnectionProvider hubConnectionProvider,
+            IClientMcpManager mcpManager,
+            IOptions<ConnectionConfig> connectionConfig)
+            : base(
+                logger: logger,
+                apiVersion: apiVersion,
+                endpoint: Consts.Hub.RemoteApp,
+                hubConnectionProvider: hubConnectionProvider,
+                // Opt-in bounded reconnect (0 = unlimited/historical). The Godot addon sets this > 0 to settle an
+                // unreachable server so a C# hot-reload is clean (godot#78513); Unity/Unreal leave it 0.
+                maxConsecutiveConnectionFailures: connectionConfig?.Value?.MaxConsecutiveConnectionFailures ?? 0)
+        {
+            _mcpManager = mcpManager ?? throw new ArgumentNullException(nameof(mcpManager));
+        }
+
+        #region Client Events
+
+        protected override void OnBeforeSubscribeToServerEvents()
+        {
+            // Reset to zero so that any notification that arrives after this point
+            // (including during the handshake) is detectable by OnConnectedAsync.
+            _liveNotificationEpoch = 0;
+        }
+
+        protected override void SubscribeOnServerEvents(HubConnection hubConnection, CompositeDisposable disposables)
+        {
+            hubConnection.On<McpClientData[]>(nameof(IClientMcpRpc.OnInitialClientData), allActiveClients =>
+            {
+                _logger.LogDebug("{class}.{method}", nameof(IClientMcpRpc), nameof(IClientMcpRpc.OnInitialClientData));
+                // If any live connect/disconnect notifications arrived before this snapshot,
+                // the snapshot is already stale — discard it so live state is not overwritten.
+                if (_liveNotificationEpoch != 0)
+                {
+                    _logger.LogDebug("{class}.{method} Discarding stale initial snapshot: live notifications already received.",
+                        nameof(McpManagerClientHub), nameof(IClientMcpRpc.OnInitialClientData));
+                    return Task.CompletedTask;
+                }
+                return _mcpManager.OnInitialClientData(allActiveClients);
+            })
+            .AddTo(_serverEventsDisposables);
+
+            hubConnection.On<McpClientData, McpClientData[]>(nameof(IClientMcpRpc.OnMcpClientConnected), (connectedClient, allActiveClients) =>
+            {
+                _logger.LogDebug("{class}.{method}", nameof(IClientMcpRpc), nameof(IClientMcpRpc.OnMcpClientConnected));
+                Interlocked.Increment(ref _liveNotificationEpoch);
+                return _mcpManager.OnMcpClientConnected(connectedClient, allActiveClients);
+            })
+            .AddTo(_serverEventsDisposables);
+
+            hubConnection.On<McpClientData, McpClientData[]>(nameof(IClientMcpRpc.OnMcpClientDisconnected), (disconnectedClient, remainingClients) =>
+            {
+                _logger.LogDebug("{class}.{method}", nameof(IClientMcpRpc), nameof(IClientMcpRpc.OnMcpClientDisconnected));
+                Interlocked.Increment(ref _liveNotificationEpoch);
+                return _mcpManager.OnMcpClientDisconnected(disconnectedClient, remainingClients);
+            })
+            .AddTo(_serverEventsDisposables);
+
+            hubConnection.On<string?>(nameof(IClientMcpRpc.ForceDisconnect), async reason =>
+            {
+                _logger.LogDebug("{class}.{method}", nameof(IClientMcpRpc), nameof(IClientMcpRpc.ForceDisconnect));
+
+                // Guard against stale ForceDisconnect messages. If a newer connection has
+                // already replaced this one (e.g. rapid reconnect during server-side
+                // single-connection enforcement), we must NOT tear down the live connection.
+                if (_connectionManager.HubConnection.CurrentValue != hubConnection)
+                {
+                    _logger.LogWarning("{class}.{method} Received ForceDisconnect on a stale connection — ignoring to protect the active connection.",
+                        nameof(McpManagerClientHub), nameof(IClientMcpRpc.ForceDisconnect));
+                    return;
+                }
+
+                if (!string.IsNullOrEmpty(reason))
+                    _logger.LogError("Server forcefully disconnected this plugin. Reason: {Reason}", reason);
+                else
+                    _logger.LogError("Server forcefully disconnected this plugin.");
+
+                var isAuthFailure = reason != null &&
+                    (reason.Contains("Authorization", StringComparison.OrdinalIgnoreCase) ||
+                     reason.Contains("Token", StringComparison.OrdinalIgnoreCase));
+
+                await _mcpManager.ForceDisconnect();
+                await _connectionManager.Disconnect();
+
+                if (isAuthFailure)
+                {
+                    _logger.LogWarning("Server rejected authorization. Firing OnAuthorizationRejected event.");
+                    _connectionManager.NotifyAuthorizationRejected();
+                }
+            })
+            .AddTo(_serverEventsDisposables);
+
+            // Tool events -------------------------------------------------------------
+
+            // Tool calls must go through McpManager.ToolHub / SystemToolHub: those run each RequestID once.
+            if (_mcpManager.ToolHub != null)
+            {
+                hubConnection.On<RequestCallTool, ResponseData<ResponseCallTool>>(nameof(IClientToolHub.RunCallTool), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientToolHub), nameof(IClientToolHub.RunCallTool));
+                        return _mcpManager.ToolHub.RunCallTool(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+
+                hubConnection.On<RequestListTool, ResponseData<ResponseListTool[]>>(nameof(IClientToolHub.RunListTool), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientToolHub), nameof(IClientToolHub.RunListTool));
+                        return _mcpManager.ToolHub.RunListTool(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+            }
+
+            // Prompt events -----------------------------------------------------------
+
+            if (_mcpManager.PromptHub != null)
+            {
+                hubConnection.On<RequestGetPrompt, ResponseData<ResponseGetPrompt>>(nameof(IClientPromptHub.RunGetPrompt), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientPromptHub), nameof(IClientPromptHub.RunGetPrompt));
+                        return _mcpManager.PromptHub.RunGetPrompt(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+
+                hubConnection.On<RequestListPrompts, ResponseData<ResponseListPrompts>>(nameof(IClientPromptHub.RunListPrompts), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientPromptHub), nameof(IClientPromptHub.RunListPrompts));
+                        return _mcpManager.PromptHub.RunListPrompts(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+            }
+
+            // Resource events ---------------------------------------------------------
+
+            if (_mcpManager.ResourceHub != null)
+            {
+                hubConnection.On<RequestResourceContent, ResponseData<ResponseResourceContent[]>>(nameof(IClientResourceHub.RunResourceContent), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientResourceHub), nameof(IClientResourceHub.RunResourceContent));
+                        return _mcpManager.ResourceHub.RunResourceContent(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+
+                hubConnection.On<RequestListResources, ResponseData<ResponseListResource[]>>(nameof(IClientResourceHub.RunListResources), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientResourceHub), nameof(IClientResourceHub.RunListResources));
+                        return _mcpManager.ResourceHub.RunListResources(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+
+                hubConnection.On<RequestListResourceTemplates, ResponseData<ResponseResourceTemplate[]>>(nameof(IClientResourceHub.RunResourceTemplates), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientResourceHub), nameof(IClientResourceHub.RunResourceTemplates));
+                        return _mcpManager.ResourceHub.RunResourceTemplates(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+            }
+
+            // System tool events ------------------------------------------------------
+
+            if (_mcpManager.SystemToolHub != null)
+            {
+                hubConnection.On<RequestCallTool, ResponseData<ResponseCallTool>>(nameof(IClientSystemToolHub.RunSystemTool), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientSystemToolHub), nameof(IClientSystemToolHub.RunSystemTool));
+                        return _mcpManager.SystemToolHub.RunSystemTool(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+
+                hubConnection.On<RequestListTool, ResponseData<ResponseListTool[]>>(nameof(IClientSystemToolHub.RunListSystemTool), data =>
+                    {
+                        _logger.LogDebug("{class}.{method}", nameof(IClientSystemToolHub), nameof(IClientSystemToolHub.RunListSystemTool));
+                        return _mcpManager.SystemToolHub.RunListSystemTool(data);
+                    })
+                    .AddTo(_serverEventsDisposables);
+            }
+        }
+
+        #endregion
+
+        #region Server Calls
+
+        public Task<ResponseData> NotifyAboutUpdatedTools(RequestToolsUpdated request) => NotifyAboutUpdatedTools(request, _cancellationTokenSource.Token);
+        public Task<ResponseData> NotifyAboutUpdatedTools(RequestToolsUpdated request, CancellationToken cancellationToken = default)
+        {
+            _logger.LogTrace("{class}.{method}", nameof(IServerMcpManager), nameof(IServerMcpManager.NotifyAboutUpdatedTools));
+            return _connectionManager.InvokeAsync<RequestToolsUpdated, ResponseData>(nameof(IServerMcpManager.NotifyAboutUpdatedTools), request, cancellationToken);
+        }
+
+        public Task<ResponseData> NotifyAboutUpdatedPrompts(RequestPromptsUpdated request) => NotifyAboutUpdatedPrompts(request, _cancellationTokenSource.Token);
+        public Task<ResponseData> NotifyAboutUpdatedPrompts(RequestPromptsUpdated request, CancellationToken cancellationToken = default)
+        {
+            _logger.LogTrace("{class}.{method}", nameof(IServerMcpManager), nameof(IServerMcpManager.NotifyAboutUpdatedPrompts));
+            return _connectionManager.InvokeAsync<RequestPromptsUpdated, ResponseData>(nameof(IServerMcpManager.NotifyAboutUpdatedPrompts), request, cancellationToken);
+        }
+
+        public Task<ResponseData> NotifyAboutUpdatedResources(RequestResourcesUpdated request) => NotifyAboutUpdatedResources(request, _cancellationTokenSource.Token);
+        public Task<ResponseData> NotifyAboutUpdatedResources(RequestResourcesUpdated request, CancellationToken cancellationToken = default)
+        {
+            _logger.LogTrace("{class}.{method}", nameof(IServerMcpManager), nameof(IServerMcpManager.NotifyAboutUpdatedResources));
+            return _connectionManager.InvokeAsync<RequestResourcesUpdated, ResponseData>(nameof(IServerMcpManager.NotifyAboutUpdatedResources), request, cancellationToken);
+        }
+
+        public Task<ResponseData> NotifyToolRequestCompleted(RequestToolCompletedData request) => NotifyToolRequestCompleted(request, _cancellationTokenSource.Token);
+        public Task<ResponseData> NotifyToolRequestCompleted(RequestToolCompletedData request, CancellationToken cancellationToken = default)
+        {
+            if (_logger.IsEnabled(LogLevel.Trace))
+            {
+                _logger.LogTrace("{class}.{method} request: {RequestId}\n{Json}",
+                    nameof(IServerMcpManager),
+                    nameof(IServerMcpManager.NotifyToolRequestCompleted),
+                    request.RequestId,
+                    request.ToPrettyJson()
+                );
+            }
+            return _connectionManager.InvokeAsync<RequestToolCompletedData, ResponseData>(nameof(IServerMcpManager.NotifyToolRequestCompleted), request, cancellationToken);
+        }
+
+        public Task<McpClientData[]> GetMcpClientData()
+        {
+            _logger.LogTrace("{class}.{method}", nameof(IServerMcpManager), nameof(IServerMcpManager.GetMcpClientData));
+            if (!IsConnectedForStatusQuery(nameof(IServerMcpManager.GetMcpClientData)))
+                return Task.FromResult<McpClientData[]>(default!);
+            return _connectionManager.InvokeAsync<McpClientData[]>(nameof(IServerMcpManager.GetMcpClientData), _cancellationTokenSource.Token);
+        }
+
+        public Task<McpServerData> GetMcpServerData()
+        {
+            _logger.LogTrace("{class}.{method}", nameof(IServerMcpManager), nameof(IServerMcpManager.GetMcpServerData));
+            if (!IsConnectedForStatusQuery(nameof(IServerMcpManager.GetMcpServerData)))
+                return Task.FromResult<McpServerData>(default!);
+            return _connectionManager.InvokeAsync<McpServerData>(nameof(IServerMcpManager.GetMcpServerData), _cancellationTokenSource.Token);
+        }
+
+        // A status query answers "what does the server know" and never connects: a connect it started was canceled by a
+        // disconnect (e.g. Unity exiting play mode) and logged warnings. Not connected: no data, as when the connect fails.
+        private bool IsConnectedForStatusQuery(string method)
+        {
+            if (ConnectionState.CurrentValue == HubConnectionState.Connected)
+                return true;
+            _logger.LogDebug("{class}.{method} skipped: not connected.", nameof(IServerMcpManager), method);
+            return false;
+        }
+
+        protected override Task OnConnectedAsync(CancellationToken cancellationToken)
+        {
+            // The server pushes OnInitialClientData via IClientMcpRpc.OnInitialClientData
+            // immediately after the plugin connects (in McpServerHub.OnConnectedAsync).
+            // No additional polling is needed here — the subscription registered in
+            // SubscribeOnServerEvents handles the incoming snapshot.
+            _logger.LogDebug("{class}.{method} Connected. Waiting for server-pushed initial client data snapshot.",
+                nameof(McpManagerClientHub), nameof(OnConnectedAsync));
+            return Task.CompletedTask;
+        }
+
+        #endregion
+    }
+}

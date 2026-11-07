@@ -11,8 +11,8 @@
 using System;
 using System.Threading.Tasks;
 using com.RedPand.MCP.Server.Tests.Harness;
-using com.IvanMurzak.McpPlugin.Common;
-using com.IvanMurzak.McpPlugin.Server.Strategy;
+using com.RedPand.MCP.Plugin.Common;
+using com.RedPand.MCP.Plugin.Server.Strategy;
 using Xunit;
 
 namespace com.RedPand.MCP.Server.Tests
