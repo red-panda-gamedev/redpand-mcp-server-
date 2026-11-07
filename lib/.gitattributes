@@ -1,0 +1,5 @@
+# Chain fixtures and chain_fixture.py are compared byte for byte as UTF-8 with LF (copied from
+# MCP-Plugin-dotnet's .gitattributes): a CRLF checkout would fail every comparison on Windows.
+*.jsonl text eol=lf
+*.py text eol=lf
+tests/chain-fixtures/** text eol=lf
