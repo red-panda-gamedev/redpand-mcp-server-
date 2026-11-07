@@ -27,7 +27,6 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
         {
             // no-auth (offline / local dev / CI): the HTTP endpoint is never token-gated, and the
             // handler runs its anonymous path. No OAuth validation.
-            options.OAuthMode = false;
         }
     }
 }

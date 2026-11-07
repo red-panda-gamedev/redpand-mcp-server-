@@ -19,7 +19,7 @@ using Sentry.Extensibility;
 namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>
-    /// Opt-in crash reporting to a Sentry-compatible endpoint (GlitchTip for ai-game.dev).
+    /// Opt-in crash reporting to a Sentry-compatible endpoint (e.g. a self-hosted GlitchTip).
     ///
     /// <para>Off unless <see cref="DsnEnvVar"/> is set; the SDK's own <c>SENTRY_DSN</c> is deliberately
     /// not used, so a developer who has it set for something else never reports from a local server.</para>

@@ -133,7 +133,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
             withOverride.Port.ShouldBe(26000);
             withOverride.PortIsOverridden.ShouldBeTrue();
 
-            var noOverride = ProjectIdentity.Derive(path, new ProjectMarker { ServerTarget = "https://ai-game.dev" });
+            var noOverride = ProjectIdentity.Derive(path, new ProjectMarker());
             noOverride.Port.ShouldBe(ProjectIdentity.DerivePort(path));
             noOverride.PortIsOverridden.ShouldBeFalse();
 

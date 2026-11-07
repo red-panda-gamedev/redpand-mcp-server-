@@ -125,44 +125,4 @@ namespace com.RedPand.MCP.Plugin.Tests.Infrastructure
             return result;
         }
     }
-
-    /// <summary>
-    /// A deterministic scripted <see cref="ITokenRefresher"/> for provider tests. Hand-rolled (not
-    /// Moq) on purpose: the interface now carries a default implementation for the request-based
-    /// overload, and a hand-written fake pins EXACTLY which overload the provider invokes —
-    /// proxy-generated mocks leave that dispatch ambiguous.
-    /// </summary>
-    public sealed class FakeTokenRefresher : ITokenRefresher
-    {
-        readonly Func<TokenRefreshRequest, TokenRefreshResult> _onRefresh;
-        readonly List<TokenRefreshRequest> _requests = new List<TokenRefreshRequest>();
-
-        public FakeTokenRefresher(Func<TokenRefreshRequest, TokenRefreshResult> onRefresh)
-        {
-            _onRefresh = onRefresh;
-        }
-
-        public FakeTokenRefresher(TokenRefreshResult fixedResult)
-            : this(_ => fixedResult)
-        {
-        }
-
-        /// <summary>Every request-based refresh call the provider made, in order.</summary>
-        public IReadOnlyList<TokenRefreshRequest> Requests => _requests;
-
-        /// <summary>How many times the LEGACY two-string API was called (must stay 0 — the provider uses the family-aware API).</summary>
-        public int LegacyCalls { get; private set; }
-
-        public Task<TokenRefreshResult> RefreshAsync(string refreshToken, string? serverTarget, CancellationToken cancellationToken = default)
-        {
-            LegacyCalls++;
-            return Task.FromResult(_onRefresh(new TokenRefreshRequest(refreshToken, serverTarget, clientId: null)));
-        }
-
-        public Task<TokenRefreshResult> RefreshAsync(TokenRefreshRequest request, CancellationToken cancellationToken = default)
-        {
-            _requests.Add(request);
-            return Task.FromResult(_onRefresh(request));
-        }
-    }
 }

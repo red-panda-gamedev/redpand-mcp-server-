@@ -65,20 +65,10 @@ namespace com.RedPand.MCP.Plugin.Common
                     public const string PluginReconnectGraceSeconds = "plugin-reconnect-grace-seconds";
                     public const string PluginReconnectWaitSeconds = "plugin-reconnect-wait-seconds";
 
-                    // OAuth resource-server arguments (mcp-authorize b2).
-                    // <c>auth</c> is the target-state name for <c>authorization</c> ({none|oauth});
-                    // the legacy <c>authorization</c> arg is retained until the legacy surface is
-                    // removed (mcp-authorize b5).
+                    // <c>auth</c> is the target-state name for <c>authorization</c> ({none|token}); the legacy
+                    // <c>authorization</c> arg is retained.
                     public const string Auth = "auth";
-                    public const string AuthIssuer = "auth-issuer";
                     public const string PublicUrl = "public-url";
-
-                    // Optional server-side metadata / fetch-base override (auth-fixes L2a / Gap B).
-                    // When set, the resource server fetches JWKS / introspection /
-                    // enrollment from this base instead of <c>auth-issuer</c>; the token <c>iss</c>
-                    // check and the RFC 9728 PRM <c>authorization_servers</c> stay on <c>auth-issuer</c>.
-                    // Unset (default, incl. all of prod) → byte-identical to deriving from the issuer.
-                    public const string AuthMetadataUrl = "auth-metadata-url";
                     public const string Bind = "bind";
 
                     // Project pin (mcp-authorize b3, design 04 D14). The stdio spawn arg carrying the
@@ -132,14 +122,8 @@ namespace com.RedPand.MCP.Plugin.Common
                     public const string PluginReconnectGraceSeconds = "MCP_PLUGIN_RECONNECT_GRACE_SECONDS";
                     public const string PluginReconnectWaitSeconds = "MCP_PLUGIN_RECONNECT_WAIT_SECONDS";
 
-                    // OAuth resource-server environment variables (mcp-authorize b2).
                     public const string Auth = "MCP_AUTH";
-                    public const string AuthIssuer = "MCP_AUTH_ISSUER";
                     public const string PublicUrl = "MCP_PUBLIC_URL";
-
-                    // Optional server-side metadata / fetch-base override (auth-fixes L2a / Gap B).
-                    // See <see cref="Args.AuthMetadataUrl"/> for semantics.
-                    public const string AuthMetadataUrl = "MCP_AUTH_METADATA_URL";
                     public const string Bind = "MCP_BIND";
                 }
 
@@ -268,10 +252,8 @@ namespace com.RedPand.MCP.Plugin.Common
                     required,
 
                     /// <summary>
-                    /// OAuth 2.1 resource-server mode (mcp-authorize b2). The server validates
-                    /// ES256 JWTs against the authorization server's JWKS and opaque tokens via
-                    /// introspection; it never mints tokens. Selected via <c>--auth oauth</c> /
-                    /// <c>MCP_AUTH=oauth</c>.
+                    /// Removed: the OAuth resource-server mode of the hosted cloud. The name stays so a
+                    /// config saved with it still parses (engines migrate it); the server refuses to start in it.
                     /// </summary>
                     oauth,
 
@@ -280,7 +262,7 @@ namespace com.RedPand.MCP.Plugin.Common
                     /// gates BOTH the SignalR plugin connection and the streamableHttp MCP endpoint on a
                     /// single static bearer secret (<c>--token</c> / <c>MCP_PLUGIN_TOKEN</c>), validated
                     /// with a constant-time compare. No authorization server / egress required — the
-                    /// offline counterpart of <see cref="oauth"/>. Selected via <c>--auth token</c> /
+                    /// Selected via <c>--auth token</c> /
                     /// <c>MCP_AUTH=token</c>.
                     /// </summary>
                     token

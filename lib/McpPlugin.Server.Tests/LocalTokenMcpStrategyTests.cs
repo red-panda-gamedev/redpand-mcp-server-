@@ -82,7 +82,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
 
             strategy.ConfigureAuthentication(options, new DataArguments(new[] { $"token={Secret}" }));
 
-            options.OAuthMode.ShouldBeFalse();
             options.LocalTokenMode.ShouldBeTrue();
             options.LocalToken.ShouldBe(Secret);
         }

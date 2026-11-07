@@ -70,7 +70,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             _strategy.ConfigureAuthentication(options, dataArguments);
 
             // Assert — no-auth mode never runs the OAuth validation path.
-            options.OAuthMode.ShouldBeFalse();
         }
 
         [Fact]
@@ -85,7 +84,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
 
             // Assert — no-auth mode never gates the HTTP endpoint, even if a legacy token is supplied
             // (the shared-token credential path was removed in mcp-authorize b5).
-            options.OAuthMode.ShouldBeFalse();
         }
 
         [Fact]

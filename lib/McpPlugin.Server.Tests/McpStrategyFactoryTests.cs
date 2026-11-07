@@ -32,14 +32,10 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         }
 
         [Fact]
-        public void Create_OAuth_ReturnsAccountMcpStrategy()
+        public void Create_OAuth_IsRefused_TheCloudModeWasRemoved()
         {
-            // Act
-            var strategy = _factory.Create(Consts.MCP.Server.AuthOption.oauth);
-
-            // Assert
-            strategy.ShouldBeOfType<AccountMcpStrategy>();
-            strategy.AuthOption.ShouldBe(Consts.MCP.Server.AuthOption.oauth);
+            var ex = Should.Throw<ArgumentException>(() => _factory.Create(Consts.MCP.Server.AuthOption.oauth));
+            ex.Message.ShouldContain("removed");
         }
 
         [Fact]

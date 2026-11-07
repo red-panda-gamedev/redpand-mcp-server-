@@ -164,60 +164,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         }
 
         /// <summary>
-        /// The highest-stakes member of the family, and the one whose answer was NOT what reading
-        /// the code predicted.
-        ///
-        /// <para>Ambient <c>CurrentIdentity</c> is frozen at <c>initialize</c> like everything else,
-        /// so the obvious worry is a request presenting account B's valid token being ROUTED as
-        /// account A. Measured, that cannot happen — but the control is not ours: the MCP SDK's own
-        /// streamable-HTTP handler binds a session to the user that created it and answers
-        /// <c>403 Forbidden: The currently authenticated user does not match the user who initiated
-        /// the session.</c> before any handler runs. The frozen identity can therefore never
-        /// disagree with the credential on the wire, because a disagreeing request never reaches a
-        /// handler.</para>
-        ///
-        /// <para>This is pinned rather than left as an observation precisely BECAUSE the control
-        /// lives in a dependency. An SDK upgrade that relaxed it would turn a frozen ambient value
-        /// from harmless into a cross-account routing bug, and nothing else in this repository would
-        /// notice.</para>
-        /// </summary>
-        [Fact]
-        public async Task ADifferentAccountsTokenOnAnEstablishedSession_IsRejectedBeforeAnyHandlerRuns()
-        {
-            const string other = "acct-someone-else";
-
-            var hub = new AmbientCaptureToolHub();
-            await using var host = await OAuthMcpHost.StartAsync(s => s.AddSingleton<IClientToolHub>(hub));
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-
-            var sessionId = await host.HandshakeAsync(client, "ambient-audit-identity");
-
-            var listRequest = new { jsonrpc = "2.0", id = 2, method = "tools/list" };
-
-            // Positive control FIRST, on the same session: the establishing token is accepted and
-            // the request reaches the plugin seam. Without it, the rejection below would be equally
-            // satisfied by a session that was already dead.
-            var (okStatus, okBody) = await host.PostExpectingAnyStatusAsync(client, sessionId, listRequest);
-            okStatus.ShouldBe(200, $"the establishing token must still work; body: {okBody}");
-            hub.ListSnapshots.Count.ShouldBe(1, "the control request must have reached the plugin seam");
-            hub.LastListSnapshot.AccountId.ShouldBe(host.AccountId, $"got {hub.LastListSnapshot}");
-
-            // Same session, a different account's VALID token on the wire.
-            var (status, body) = await host.PostExpectingAnyStatusAsync(
-                client, sessionId, new { jsonrpc = "2.0", id = 3, method = "tools/list" },
-                bearerToken: host.TokenForAccount(other));
-
-            status.ShouldBe(403, $"a foreign account's token must not be usable on this session; body: {body}");
-            body.ShouldContain("does not match the user who initiated the session", Case.Sensitive,
-                $"the rejection must be the SDK's session/user binding, not an unrelated failure; body: {body}");
-
-            // ...and it was rejected BEFORE the handler: the seam count did not move. This is what
-            // makes "the frozen identity is harmless" a measurement rather than an inference.
-            hub.ListSnapshots.Count.ShouldBe(1,
-                "the rejected request must never have reached a tools/list handler");
-        }
-
-        /// <summary>
         /// Rules <c>prompts/list</c> and <c>resources/list</c> IN: they run on the same captured
         /// session context, so the trusted-client opt-in they consume through
         /// <c>ExtensionsListMeta.SelectVisible</c> has the same session semantics as the tool list.

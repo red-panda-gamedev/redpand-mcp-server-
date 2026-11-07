@@ -9,7 +9,7 @@
 */
 
 #nullable enable
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
+using com.RedPand.MCP.Plugin.Server.Security;
 using Shouldly;
 using Xunit;
 

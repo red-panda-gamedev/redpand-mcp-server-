@@ -26,8 +26,9 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
     /// </summary>
     public sealed class AntigravityDualConfigTests : IDisposable
     {
-        private const string Key = "agd_pk_AntigravityDualProbeKey_0123456789";
-        private const string CloudHost = "https://ai-game.dev/mcp";
+        // A local server in token mode: the written HTTP entry carries this secret as a Bearer header.
+        private const string Key = "local-secret_AntigravityDualProbe_0123456789";
+        private const string LocalHost = "http://localhost:50000/mcp";
         private const string ServerName = AiAgentConfig.DefaultMcpServerName;
 
         private readonly string _home;
@@ -43,8 +44,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
             _pathB = Path.Combine(_home, ".gemini", "antigravity", "mcp_config.json");
             _c = new AntigravityConfigurator(_home);
             _settings = new AgentConfiguratorSettings(
-                OperatingSystemKind.Linux, Path.Combine(_home, "proj"), "/opt/srv/gamedev-mcp-server", 50000, 30000, CloudHost,
-                connectionMode: ConnectionMode.Cloud).WithProjectKey(Key);
+                OperatingSystemKind.Linux, Path.Combine(_home, "proj"), "/opt/srv/gamedev-mcp-server", 50000, 30000, LocalHost,
+                token: Key, authOption: AuthOption.token);
         }
 
         public void Dispose()
@@ -112,7 +113,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         // ── Configure ──────────────────────────────────────────────────────────
 
         [Fact]
-        public void Configure_WritesBothFiles_WithTheProjectKeyHeader()
+        public void Configure_WritesBothFiles_WithTheTokenHeader()
         {
             Http().Configure().ShouldBeTrue();
 
@@ -254,7 +255,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         }
 
         [Fact]
-        public void Status_MissingProjectKeyHeader_InOneFile_IsNotConfigured()
+        public void Status_MissingTokenHeader_InOneFile_IsNotConfigured()
         {
             Http().Configure().ShouldBeTrue();
             // Re-write B without the header (the credential-free shape) — B is now stale for a project-key config.

@@ -28,7 +28,7 @@ namespace com.RedPand.MCP.Server.Configure
     /// command without touching the editor UI. Every written config is <b>project-scoped and pinned</b>:
     /// the URL carries the D14 <c>/p/&lt;pin&gt;</c> path segment and the D15 deterministic per-project
     /// port, both derived by the shared <see cref="ProjectIdentity"/> from the (normalized) project root
-    /// plus the committable <see cref="ProjectMarker"/> (<c>.ai-game-dev/project.json</c>). Credentials
+    /// plus the committable <see cref="ProjectMarker"/> (<c>.redpand-mcp/project.json</c>). Credentials
     /// are never written into the config (URL-only default, D11).
     /// </para>
     /// The subcommand resolves and writes the config, then exits WITHOUT starting the server.
@@ -39,7 +39,7 @@ namespace com.RedPand.MCP.Server.Configure
 
         private const string DefaultLocalHost = "http://localhost";
         private const string ServerExecutableName = "gamedev-mcp-server";
-        private const string DockerImage = "aigamedeveloper/mcp-server";
+        private const string DockerImage = "ghcr.io/red-panda-gamedev/redpand-mcp-server";
         private const int DefaultPluginTimeoutMs = 10000;
 
         /// <summary>True when the process was launched as <c>gamedev-mcp-server configure …</c>.</summary>
@@ -110,7 +110,7 @@ namespace com.RedPand.MCP.Server.Configure
             var connectionMode = ResolveConnectionMode(host);
 
             // URL-only default (D11): the golden path never writes a credential into a project file.
-            // Local => none (offline), Cloud => oauth (native authorize). An explicit --auth overrides.
+            // Default none (offline). An explicit --auth overrides.
             var authOption = ResolveAuthOption(Get(options, "auth"), connectionMode);
 
             // The deterministic per-project port (D15) comes from ProjectIdentity, sourced from the
@@ -203,12 +203,8 @@ namespace com.RedPand.MCP.Server.Configure
             throw new ConfigureException($"Invalid --transport '{raw}'. Use 'http' or 'stdio'.");
         }
 
-        internal static ConnectionMode ResolveConnectionMode(string host)
-        {
-            if (Uri.TryCreate(host, UriKind.Absolute, out var uri) && !uri.IsLoopback)
-                return ConnectionMode.Cloud;
-            return ConnectionMode.Local;
-        }
+        // RedPand: every host is a server the user runs (the hosted Cloud mode was removed).
+        internal static ConnectionMode ResolveConnectionMode(string host) => ConnectionMode.Local;
 
         internal static Consts.MCP.Server.AuthOption ResolveAuthOption(string? rawAuth, ConnectionMode connectionMode)
         {
@@ -216,11 +212,13 @@ namespace com.RedPand.MCP.Server.Configure
                 && Enum.TryParse<Consts.MCP.Server.AuthOption>(rawAuth.Trim(), ignoreCase: true, out var explicitOption)
                 && Enum.IsDefined(typeof(Consts.MCP.Server.AuthOption), explicitOption)
                 && explicitOption != Consts.MCP.Server.AuthOption.unknown)
+            {
+                if (explicitOption == Consts.MCP.Server.AuthOption.oauth)
+                    throw new ConfigureException("--auth oauth was removed with the hosted cloud. Use 'token' or 'none'.");
                 return explicitOption;
+            }
 
-            return connectionMode == ConnectionMode.Cloud
-                ? Consts.MCP.Server.AuthOption.oauth
-                : Consts.MCP.Server.AuthOption.none;
+            return Consts.MCP.Server.AuthOption.none;
         }
 
         private static string ResolveProjectRoot(string? raw)

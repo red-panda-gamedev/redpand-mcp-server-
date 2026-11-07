@@ -10,7 +10,7 @@
 
 #nullable enable
 using System;
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
+using com.RedPand.MCP.Plugin.Server.Security;
 using Microsoft.AspNetCore.Http;
 
 namespace com.RedPand.MCP.Plugin.Server.Security

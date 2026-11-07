@@ -17,7 +17,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
 {
     /// <summary>
     /// Round-trip + precedence coverage for the committable project marker
-    /// <c>&lt;project&gt;/.ai-game-dev/project.json</c>.
+    /// <c>&lt;project&gt;/.redpand-mcp/project.json</c>.
     /// </summary>
     public sealed class ProjectMarkerTests : IDisposable
     {
@@ -36,10 +36,10 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         }
 
         [Fact]
-        public void PathFor_IsUnderDotAiGameDev()
+        public void PathFor_IsUnderDotRedpandMcp()
         {
             var path = ProjectMarker.PathFor(_projectRoot);
-            path.ShouldBe(Path.Combine(_projectRoot, ".ai-game-dev", "project.json"));
+            path.ShouldBe(Path.Combine(_projectRoot, ".redpand-mcp", "project.json"));
         }
 
         [Fact]
@@ -53,7 +53,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         {
             var marker = new ProjectMarker
             {
-                ServerTarget = "https://ai-game.dev",
                 PortOverride = 26123,
             };
             marker.Write(_projectRoot);
@@ -62,21 +61,20 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
 
             var read = ProjectMarker.Read(_projectRoot);
             read.ShouldNotBeNull();
-            read!.ServerTarget.ShouldBe("https://ai-game.dev");
             read.PortOverride.ShouldBe(26123);
         }
 
         [Fact]
-        public void Write_CreatesDotAiGameDevDirectory()
+        public void Write_CreatesDotRedpandMcpDirectory()
         {
-            new ProjectMarker { ServerTarget = "https://ai-game.dev" }.Write(_projectRoot);
-            Directory.Exists(Path.Combine(_projectRoot, ".ai-game-dev")).ShouldBeTrue();
+            new ProjectMarker { PortOverride = 26001 }.Write(_projectRoot);
+            Directory.Exists(Path.Combine(_projectRoot, ".redpand-mcp")).ShouldBeTrue();
         }
 
         [Fact]
         public void PortOverride_IsOmitted_WhenNull()
         {
-            new ProjectMarker { ServerTarget = "https://ai-game.dev" }.Write(_projectRoot);
+            new ProjectMarker().Write(_projectRoot);
 
             var json = File.ReadAllText(ProjectMarker.PathFor(_projectRoot));
             json.ShouldNotContain("portOverride");
@@ -111,8 +109,28 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
 
             var read = ProjectMarker.Read(_projectRoot);
             read.ShouldNotBeNull();
-            read!.ServerTarget.ShouldBeNull();
             read.PortOverride.ShouldBeNull();
+        }
+
+        [Fact]
+        public void Read_FallsBackToTheLegacyDirectory()
+        {
+            var legacy = Path.Combine(_projectRoot, ProjectMarker.LegacyDirectoryName);
+            Directory.CreateDirectory(legacy);
+            File.WriteAllText(Path.Combine(legacy, ProjectMarker.FileName), "{\"portOverride\": 26002}");
+
+            ProjectMarker.Read(_projectRoot)!.PortOverride.ShouldBe(26002);
+        }
+
+        [Fact]
+        public void Read_PrefersTheNewDirectory_OverTheLegacyOne()
+        {
+            var legacy = Path.Combine(_projectRoot, ProjectMarker.LegacyDirectoryName);
+            Directory.CreateDirectory(legacy);
+            File.WriteAllText(Path.Combine(legacy, ProjectMarker.FileName), "{\"portOverride\": 26002}");
+            new ProjectMarker { PortOverride = 26003 }.Write(_projectRoot);
+
+            ProjectMarker.Read(_projectRoot)!.PortOverride.ShouldBe(26003);
         }
     }
 }

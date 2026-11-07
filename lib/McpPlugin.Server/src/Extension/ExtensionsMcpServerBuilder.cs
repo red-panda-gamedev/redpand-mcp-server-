@@ -21,7 +21,6 @@ using com.RedPand.MCP.Plugin.Common.Hub.Client;
 using com.RedPand.MCP.Plugin.Common.Model;
 using com.RedPand.MCP.Plugin.Common.Utils;
 using com.RedPand.MCP.Plugin.Server.Auth;
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
 using com.RedPand.MCP.Plugin.Server.Security;
 using com.RedPand.MCP.Plugin.Server.Strategy;
 using com.RedPand.MCP.Plugin.Server.Tools;
@@ -99,123 +98,13 @@ namespace com.RedPand.MCP.Plugin.Server
                     options =>
                     {
                         // The resolved strategy owns auth configuration (none → anonymous,
-                        // oauth → OAuthMode). setup is always registered by WithMcpServer; the
+                        // token → LocalTokenMode). setup is always registered by WithMcpServer; the
                         // fallback stays anonymous/fail-closed (the legacy shared-token default was
                         // removed in mcp-authorize b5 — a token never gates the endpoint on its own).
                         if (setup != null)
                             setup.Strategy.ConfigureAuthentication(options, dataArguments);
-                        else
-                            options.OAuthMode = false;
                     });
             mcpServerBuilder.Services.AddAuthorization();
-
-            // OAuth resource-server services (mcp-authorize b2) — registered only in oauth mode.
-            // The TokenAuthenticationHandler's optional IOAuthTokenValidator/OAuthResourceServerConfig
-            // ctor params resolve from these; in legacy modes they stay null (unchanged behavior).
-            if (dataArguments.Authorization == Consts.MCP.Server.AuthOption.oauth)
-            {
-                mcpServerBuilder.Services.AddHttpClient();
-
-                var oauthConfig = new OAuthResourceServerConfig(dataArguments.AuthIssuer!, dataArguments.PublicUrl!, metadataUrl: dataArguments.AuthMetadataUrl);
-                mcpServerBuilder.Services.AddSingleton(oauthConfig);
-                mcpServerBuilder.Services.AddSingleton<IJwksDiskCache>(_ => new FileJwksDiskCache());
-
-                mcpServerBuilder.Services.AddSingleton<IJwksKeyProvider>(sp =>
-                {
-                    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-                    var cache = sp.GetRequiredService<IJwksDiskCache>();
-                    JwksFetch fetch = async ct =>
-                    {
-                        var client = httpFactory.CreateClient();
-                        client.Timeout = TimeSpan.FromSeconds(10);
-                        using var response = await client.GetAsync(oauthConfig.JwksUri, ct);
-                        if (!response.IsSuccessStatusCode)
-                            return null;
-                        return await response.Content.ReadAsStringAsync(ct);
-                    };
-                    return new JwksKeyProvider(fetch, cache, logger: sp.GetService<ILogger<JwksKeyProvider>>());
-                });
-
-                mcpServerBuilder.Services.AddSingleton<IIntrospectionClient>(sp =>
-                {
-                    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-                    IntrospectionPost post = async (token, ct) =>
-                    {
-                        var client = httpFactory.CreateClient();
-                        client.Timeout = TimeSpan.FromSeconds(10);
-                        var body = new FormUrlEncodedContent(new[]
-                        {
-                            new KeyValuePair<string, string>("token", token)
-                        });
-                        using var response = await client.PostAsync(oauthConfig.IntrospectionEndpoint, body, ct);
-                        if (!response.IsSuccessStatusCode)
-                            return null;
-                        return await response.Content.ReadAsStringAsync(ct);
-                    };
-                    return new IntrospectionClient(post, logger: sp.GetService<ILogger<IntrospectionClient>>());
-                });
-
-                mcpServerBuilder.Services.AddSingleton<IOAuthTokenValidator>(sp => new AccessTokenValidator(
-                    sp.GetRequiredService<OAuthResourceServerConfig>(),
-                    sp.GetRequiredService<IJwksKeyProvider>(),
-                    sp.GetRequiredService<IIntrospectionClient>(),
-                    logger: sp.GetService<ILogger<AccessTokenValidator>>()));
-
-                // Server-native tools (mcp-authorize b4) — the account+instance selection + enrollment
-                // surface. Only meaningful in oauth mode (the pairing plane), so registered here.
-                //
-                // Resolve the store OFF the strategy rather than constructing a second one (issue #195):
-                // AccountMcpStrategy consults it to honor a session's sticky selection when routing, so
-                // a separately-registered store would leave select_engine_instance writing to one map
-                // while the router read another — the tool would answer "Selected …" and change nothing.
-                mcpServerBuilder.Services.AddSingleton<ISessionSelectionStore>(sp =>
-                {
-                    var strategy = sp.GetRequiredService<IMcpConnectionStrategy>() as AccountMcpStrategy
-                        ?? throw new InvalidOperationException("ISessionSelectionStore requires the oauth AccountMcpStrategy.");
-                    return strategy.Selections;
-                });
-
-                mcpServerBuilder.Services.AddSingleton<IEnrollmentClient>(sp =>
-                {
-                    var httpFactory = sp.GetRequiredService<IHttpClientFactory>();
-                    var config = sp.GetRequiredService<OAuthResourceServerConfig>();
-                    // Enroll (like JWKS + introspection) uses the server-side fetch base, which honors
-                    // the optional --auth-metadata-url override; unset → derived from Issuer (auth-fixes L2a).
-                    var enrollEndpoint = config.EnrollmentEndpoint;
-                    EnrollCreatePost post = async (bearer, engine, publicUrl, ct) =>
-                    {
-                        var client = httpFactory.CreateClient();
-                        client.Timeout = TimeSpan.FromSeconds(10);
-                        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, enrollEndpoint);
-                        // Forward the session credential verbatim; NEVER log it.
-                        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
-                        var payload = JsonSerializer.Serialize(new Dictionary<string, string>
-                        {
-                            ["engine"] = engine,
-                            ["public_url"] = publicUrl
-                        });
-                        httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-                        using var httpResponse = await client.SendAsync(httpRequest, ct);
-                        if (!httpResponse.IsSuccessStatusCode)
-                            return null;
-                        return await httpResponse.Content.ReadAsStringAsync(ct);
-                    };
-                    return new EnrollmentClient(post, dataArguments.PublicUrl!, logger: sp.GetService<ILogger<EnrollmentClient>>());
-                });
-
-                mcpServerBuilder.Services.AddSingleton<ServerNativeTools>(sp =>
-                {
-                    // In oauth mode the resolved IMcpConnectionStrategy is always the AccountMcpStrategy,
-                    // whose registry backs the selection tools.
-                    var strategy = sp.GetRequiredService<IMcpConnectionStrategy>() as AccountMcpStrategy
-                        ?? throw new InvalidOperationException("ServerNativeTools requires the oauth AccountMcpStrategy.");
-                    return new ServerNativeTools(
-                        strategy.Instances,
-                        sp.GetRequiredService<ISessionSelectionStore>(),
-                        sp.GetRequiredService<IEnrollmentClient>(),
-                        logger: sp.GetService<ILogger<ServerNativeTools>>());
-                });
-            }
 
             // Origin validation options (mcp-authorize b2) — registered in ALL modes; consumed by
             // OriginValidationMiddleware (wired in ExtensionsWebApplication.UseMcpPluginServer).

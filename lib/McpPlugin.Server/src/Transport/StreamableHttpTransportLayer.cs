@@ -142,9 +142,6 @@ namespace com.RedPand.MCP.Plugin.Server.Transport
                             // ambient state, so the key never depends on AsyncLocal flow. Malformed pins
                             // were already rejected upstream by McpSessionTokenMiddleware.
                             var pinParse = McpSessionTokenMiddleware.TryExtractProjectPin(context.Request.Path.Value, out var projectPin);
-                            // A project key with no path pin is keyed under its bound pin — the same effective
-                            // pin the middleware routes by (a mismatch never reaches here: it was 403'd).
-                            McpSessionTokenMiddleware.ResolveEffectiveProjectPin(pinParse, projectPin, context.User, out projectPin);
 
                             var reaper = server.Services?.GetService<IMcpSessionReaper>();
                             identityLease = reaper?.Claim(identity?.AccountId, instanceId, projectPin, mcpClientSessionId);
@@ -273,52 +270,11 @@ namespace com.RedPand.MCP.Plugin.Server.Transport
 
             logger.Debug("Configuring HTTP transport endpoints. Auth={mode}", mode);
 
-            if (mode == Consts.MCP.Server.AuthOption.oauth)
-            {
-                // OAuth resource-server mode (mcp-authorize b2): serve ONLY Protected Resource
-                // Metadata (RFC 9728) pointing at the EXTERNAL authorization server. The RS never
-                // mints tokens, so no /oauth/register, /oauth/token, or AS-metadata are served here.
-                var oauthConfig = app.Services.GetService<Auth.OAuth.OAuthResourceServerConfig>();
-
-                // Public, non-secret PRM (RFC 9728). Served at BOTH the bare well-known path AND —
-                // when --public-url carries a path (e.g. https://host/mcp) — the path-inserted URL
-                // the 401 challenge advertises (OAuthResourceServerConfig.ProtectedResourceMetadataUrl),
-                // so a spec-compliant client following the challenge does not 404 on a path-bearing
-                // resource. Shared handler avoids duplicating the body across both routes.
-                RequestDelegate servePrm = async ctx =>
-                {
-                    if (oauthConfig == null)
-                    {
-                        await Results.StatusCode(500).ExecuteAsync(ctx);
-                        return;
-                    }
-                    // CORS-open so browser-based MCP clients can read it.
-                    ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
-                    var document = Auth.OAuth.OAuthProtectedResourceMetadata.Build(oauthConfig);
-                    await Results.Json(document).ExecuteAsync(ctx);
-                };
-
-                const string bareMetadataPath = "/.well-known/oauth-protected-resource";
-                app.MapGet(bareMetadataPath, servePrm).AllowAnonymous();
-
-                // Path-bearing resource → also serve at the challenge-advertised path-inserted URL.
-                if (oauthConfig != null
-                    && Uri.TryCreate(oauthConfig.ProtectedResourceMetadataUrl(), UriKind.Absolute, out var prmUri)
-                    && !string.Equals(prmUri.AbsolutePath, bareMetadataPath, StringComparison.Ordinal))
-                {
-                    app.MapGet(prmUri.AbsolutePath, servePrm).AllowAnonymous();
-                }
-
-                app.MapMcp("/").RequireAuthorization();
-                app.MapMcp("/mcp").RequireAuthorization();
-                MapPinnedMcp(app, requireAuthorization: true);
-            }
-            else if (mode == Consts.MCP.Server.AuthOption.token
+            if (mode == Consts.MCP.Server.AuthOption.token
                 || mode == Consts.MCP.Server.AuthOption.required)
             {
                 // Offline token mode (mcp-authorize g6): gate the MCP endpoint with RequireAuthorization
-                // exactly like oauth, but WITHOUT the RFC 9728 Protected-Resource-Metadata routes — there
-                // is no authorization server to discover; the credential is the local static --token,
+                // — there is no authorization server to discover; the credential is the local static --token,
                 // validated by TokenAuthenticationHandler's constant-time compare. Without this gate the
                 // token would be validated but never ENFORCED (unauthenticated requests would still reach
                 // the endpoint). `required` is aliased onto the same token strategy (back-compat).

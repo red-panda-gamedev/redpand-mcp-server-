@@ -18,22 +18,24 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
 {
     /// <summary>
     /// The tool-neutral, committable per-project marker file
-    /// <c>&lt;project&gt;/.ai-game-dev/project.json</c>.
+    /// <c>&lt;project&gt;/.redpand-mcp/project.json</c>.
     ///
     /// <para>
-    /// It records the enrolled <see cref="ServerTarget"/> (hosted vs local) and the user's optional
-    /// explicit <see cref="PortOverride"/>. <see cref="ProjectIdentity"/> resolution and every config
-    /// writer (engine UI, CLIs, <c>configure</c>) consult it, so an override or target can never
-    /// silently diverge between the plugin and a terminal-written config.
+    /// It records the user's optional explicit <see cref="PortOverride"/>. <see cref="ProjectIdentity"/>
+    /// resolution and every config writer (engine UI, CLIs, <c>configure</c>) consult it, so an override can
+    /// never silently diverge between the plugin and a terminal-written config. A marker written before the
+    /// rename, in <see cref="LegacyDirectoryName"/>, is still read; the next write goes to the new place.
     /// </para>
     ///
-    /// <para><b>This file is non-secret and safe to commit.</b> Credentials are NEVER written here —
-    /// they live only in the machine credential store (<see cref="MachineCredentialStore"/>).</para>
+    /// <para><b>This file is non-secret and safe to commit.</b> Credentials are never written here.</para>
     /// </summary>
     public sealed class ProjectMarker
     {
         /// <summary>Directory name (under the project root) that holds the marker.</summary>
-        public const string DirectoryName = ".ai-game-dev";
+        public const string DirectoryName = ".redpand-mcp";
+
+        /// <summary>Where the marker lived before RedPand: read when the new one is missing.</summary>
+        public const string LegacyDirectoryName = ".ai-game-dev";
 
         /// <summary>Marker file name inside <see cref="DirectoryName"/>.</summary>
         public const string FileName = "project.json";
@@ -45,10 +47,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
             WriteIndented = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         };
-
-        /// <summary>The enrolled server target URL (hosted <c>https://ai-game.dev</c> or a local URL). Optional.</summary>
-        [JsonPropertyName("serverTarget")]
-        public string? ServerTarget { get; set; }
 
         /// <summary>The user's explicit local-port override. When set it wins over the derived port. Optional.</summary>
         [JsonPropertyName("portOverride")]
@@ -70,6 +68,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
         {
             var path = PathFor(projectRoot);
             if (!File.Exists(path))
+                path = Path.Combine(projectRoot, LegacyDirectoryName, FileName);
+            if (!File.Exists(path))
                 return null;
 
             var json = File.ReadAllText(path);
@@ -81,7 +81,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
 
         /// <summary>
         /// Write this marker into <paramref name="projectRoot"/>, creating the
-        /// <c>.ai-game-dev</c> directory if needed. Non-secret; standard file permissions.
+        /// <c>.redpand-mcp</c> directory if needed. Non-secret; standard file permissions.
         /// </summary>
         public void Write(string projectRoot)
         {

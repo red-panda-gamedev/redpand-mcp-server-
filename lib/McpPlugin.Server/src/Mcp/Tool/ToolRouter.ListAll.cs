@@ -41,7 +41,7 @@ namespace com.RedPand.MCP.Plugin.Server
             // Registered only in oauth mode; null otherwise (leaving today's pure pass-through). They
             // MUST appear even when NO plugin is connected so an engine-less agent can still call
             // enroll_engine_plugin — hence they are merged into every return path below.
-            var nativeTools = request.Services.GetService<ServerNativeTools>()?.Descriptors;
+            var nativeTools = (IReadOnlyList<Tool>?)null; // RedPand: the account plane's native tools went with the cloud
 
             var clientToolHub = request.Services.GetRequiredService<IClientToolHub>();
             logger.Trace("ListAll Using ClientToolHub: {0}", clientToolHub.GetType().GetTypeShortName());

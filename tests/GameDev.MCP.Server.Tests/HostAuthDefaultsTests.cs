@@ -16,60 +16,29 @@ using Xunit;
 namespace com.RedPand.MCP.Server.Tests
 {
     /// <summary>
-    /// Covers the transport-conditional auth default policy (mcp-authorize, design 02 §"modes"):
-    /// stdio → none, streamableHttp → oauth-when-configurable-else-none-with-warning, and explicit
-    /// choices are always left untouched.
+    /// Covers the auth default policy: stdio and an explicit choice are left untouched; http without an
+    /// explicit auth stays on none with a warning (the hosted cloud's oauth default was removed).
     /// </summary>
     public class HostAuthDefaultsTests
     {
         [Fact]
         public void Stdio_NoExplicitAuth_LeavesAsConfigured()
         {
-            var decision = HostAuthDefaults.Decide(
-                Consts.MCP.Server.TransportMethod.stdio,
-                authExplicitlySet: false,
-                hasAuthIssuer: false,
-                hasPublicUrl: false);
-
+            var decision = HostAuthDefaults.Decide(Consts.MCP.Server.TransportMethod.stdio, authExplicitlySet: false);
             Assert.Equal(HostAuthDefaults.Decision.LeaveAsConfigured, decision);
         }
 
         [Fact]
-        public void Http_NoExplicitAuth_IssuerAndPublicUrl_DefaultsToOauth()
+        public void Http_NoExplicitAuth_FallsBackToNoneWithWarning()
         {
-            var decision = HostAuthDefaults.Decide(
-                Consts.MCP.Server.TransportMethod.streamableHttp,
-                authExplicitlySet: false,
-                hasAuthIssuer: true,
-                hasPublicUrl: true);
-
-            Assert.Equal(HostAuthDefaults.Decision.DefaultHttpToOauth, decision);
-        }
-
-        [Theory]
-        [InlineData(true, false)]  // issuer only
-        [InlineData(false, true)]  // public-url only
-        [InlineData(false, false)] // neither
-        public void Http_NoExplicitAuth_MissingIssuerOrPublicUrl_FallsBackToNoneWithWarning(bool hasIssuer, bool hasPublicUrl)
-        {
-            var decision = HostAuthDefaults.Decide(
-                Consts.MCP.Server.TransportMethod.streamableHttp,
-                authExplicitlySet: false,
-                hasAuthIssuer: hasIssuer,
-                hasPublicUrl: hasPublicUrl);
-
+            var decision = HostAuthDefaults.Decide(Consts.MCP.Server.TransportMethod.streamableHttp, authExplicitlySet: false);
             Assert.Equal(HostAuthDefaults.Decision.DefaultHttpToNoneWithWarning, decision);
         }
 
         [Fact]
-        public void Http_ExplicitAuth_LeavesAsConfigured_EvenWithIssuer()
+        public void Http_ExplicitAuth_LeavesAsConfigured()
         {
-            var decision = HostAuthDefaults.Decide(
-                Consts.MCP.Server.TransportMethod.streamableHttp,
-                authExplicitlySet: true,
-                hasAuthIssuer: true,
-                hasPublicUrl: true);
-
+            var decision = HostAuthDefaults.Decide(Consts.MCP.Server.TransportMethod.streamableHttp, authExplicitlySet: true);
             Assert.Equal(HostAuthDefaults.Decision.LeaveAsConfigured, decision);
         }
 

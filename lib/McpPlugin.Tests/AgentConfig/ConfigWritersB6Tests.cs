@@ -247,8 +247,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                 executableFullPath: "C:/Tools/server.exe",
                 port: 50000,
                 timeoutMs: 30000,
-                host: "https://ai-game.dev/mcp",
-                connectionMode: ConnectionMode.Cloud);
+                host: "https://mcp.example.com/mcp");
 
             var v2Pin = ProjectIdentity.DerivePinV2(backslashRoot);
             settings.ProjectPin.ShouldBe(v2Pin);
@@ -471,17 +470,16 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         }
 
         [Fact]
-        public void ExplicitHostPort_IsIgnored_ForNonLoopbackAndCloud()
+        public void ExplicitHostPort_IsIgnored_ForNonLoopback()
         {
-            // The port rewrite only ever applied to a LOCAL loopback authority; a hosted target keeps
-            // its authority verbatim, which already preserved any typed port. Pinned so the defect-A
-            // change cannot leak into the cloud path.
+            // The port rewrite only ever applied to a LOCAL loopback authority; a remote target keeps
+            // its authority verbatim, which already preserved any typed port.
             var root = NewTempDir();
             try
             {
-                var cloud = Settings(root, connectionMode: ConnectionMode.Cloud, host: "https://ai-game.dev/mcp");
-                cloud.PinnedHttpUrl.ShouldBe($"https://ai-game.dev/mcp/p/{cloud.ProjectPin}");
-                cloud.PinnedHttpUrl.ShouldNotContain($":{cloud.ResolvedPort}");
+                var remote = Settings(root, host: "https://mcp.example.com/mcp");
+                remote.PinnedHttpUrl.ShouldBe($"https://mcp.example.com/mcp/p/{remote.ProjectPin}");
+                remote.PinnedHttpUrl.ShouldNotContain($":{remote.ResolvedPort}");
 
                 var lan = Settings(root, host: "http://192.168.1.5:9000/mcp");
                 lan.PinnedHttpUrl.ShouldBe($"http://192.168.1.5:9000/mcp/p/{lan.ProjectPin}");
@@ -577,12 +575,12 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                 c.GetStdioConfig(lan).ExpectedFileContent.ShouldContain($"{Consts.MCP.Server.Args.Port}=9000");
                 c.GetHttpConfig(lan).ExpectedFileContent.ShouldContain("http://192.168.1.5:9000/mcp/p/");
 
-                // Cloud host with no port: nothing to honour, so stdio falls back to the derived v2 port.
-                // The cloud HTTP url carries no port at all — the local spawn still needs one, so the two
+                // Remote host with no port: nothing to honour, so stdio falls back to the derived v2 port.
+                // The remote HTTP url carries no port at all — the local spawn still needs one, so the two
                 // legitimately differ here rather than disagreeing about the same value.
-                var cloud = Settings(root, connectionMode: ConnectionMode.Cloud, host: "https://ai-game.dev/mcp");
-                cloud.PinnedPort.ShouldBe(ProjectIdentity.DerivePortV2(root));
-                c.GetStdioConfig(cloud).ExpectedFileContent
+                var remote = Settings(root, host: "https://mcp.example.com/mcp");
+                remote.PinnedPort.ShouldBe(ProjectIdentity.DerivePortV2(root));
+                c.GetStdioConfig(remote).ExpectedFileContent
                     .ShouldContain($"{Consts.MCP.Server.Args.Port}={ProjectIdentity.DerivePortV2(root)}");
             }
             finally { Directory.Delete(root, recursive: true); }

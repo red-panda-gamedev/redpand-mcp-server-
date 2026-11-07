@@ -134,7 +134,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
                     TokenAuthenticationHandler.SchemeName,
                     options =>
                     {
-                        options.OAuthMode = authOption == Consts.MCP.Server.AuthOption.oauth;
                         options.LocalTokenMode = localTokenMode;
                         if (localTokenMode)
                             options.LocalToken = Secret;

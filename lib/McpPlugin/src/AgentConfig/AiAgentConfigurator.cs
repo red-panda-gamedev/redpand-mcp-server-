@@ -21,10 +21,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
     /// How a credential is written into an HTTP MCP config (mcp-authorize b6). The default is
     /// <see cref="Oauth"/>: the config carries no credential at all — the client performs native
     /// MCP OAuth against the server URL (design 03 Flow A). <see cref="AccessToken"/> writes an
-    /// <c>Authorization: Bearer</c> credential: the Cloud <b>project key</b> (the Cloud default whenever
-    /// <see cref="AgentConfiguratorSettings.ProjectKey"/> is set — project-keys contract §7), the local
-    /// server's offline <c>token</c>-mode secret, or an explicitly supplied PAT (Flow C; writing a PAT into
-    /// a project-scoped file emits a warning). Resolve it with
+    /// <c>Authorization: Bearer</c> credential: the local server's offline <c>token</c>-mode secret, or an
+    /// explicitly supplied token (writing one into a project-scoped file emits a warning). Resolve it with
     /// <see cref="AgentConfiguratorSettings.ResolveHttpCredentialMode"/>.
     /// </summary>
     public enum HttpCredentialMode
@@ -225,9 +223,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
             HttpCredentialMode credentialMode,
             ILogger? logger)
         {
-            // A Cloud project key is written into the project config by design (owner ruling 2026-09-23:
-            // no git warnings for project keys) — it is pin-bound and revocable. Only a PAT / local secret warns.
-            if (credentialMode != HttpCredentialMode.AccessToken || settings.HasProjectKey || string.IsNullOrEmpty(settings.Token))
+            if (credentialMode != HttpCredentialMode.AccessToken || string.IsNullOrEmpty(settings.Token))
                 return;
 
             if (!config.ExpectedFileContent.Contains(settings.Token!, StringComparison.Ordinal))
@@ -353,7 +349,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
                     isConfigured: false,
                     isInstalled: false,
                     sections: setupKind == AgentSetupKind.Manual
-                        ? BuildManualSetupSections(settings.ForDisplay())
+                        ? BuildManualSetupSections(settings)
                         : new[]
                         {
                             new ConfigurationSection("Transport Not Supported", true, new[]
@@ -365,16 +361,14 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
                     setupKind: setupKind);
             }
 
-            // Status compares against what Configure REALLY writes (the unredacted settings). It runs before
-            // ForDisplay() so the clone inherits the already-resolved identity / marker caches.
+            // Status compares against what Configure REALLY writes.
             var status = GetStatus(settings, transport, logger);
-            var display = settings.ForDisplay();
-            var sections = BuildSections(display, transport, logger);
+            var sections = BuildSections(settings, transport, logger);
 
             // Append the per-agent Troubleshooting section(s) after the configuration sections,
             // mirroring Unity's per-configurator "Troubleshooting" foldout (emitted last). Agents
             // that declare none get an empty list and the sections are unchanged.
-            var troubleshooting = BuildTroubleshootingSections(display, transport, logger);
+            var troubleshooting = BuildTroubleshootingSections(settings, transport, logger);
             if (troubleshooting.Count > 0)
             {
                 var withTroubleshooting = new List<ConfigurationSection>(sections);
@@ -474,13 +468,10 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
 
         /// <summary>
         /// The HTTP config a user-visible preview renders. Must not EXPOSE a secret (mcp-authorize i1 / BUG-A), so a
-        /// PAT / local-secret snapshot renders the credential-free OAuth shape; a Cloud project-key snapshot renders
-        /// the SAME shape Configure writes (header present), key redacted via <see cref="AgentConfiguratorSettings.ForDisplay"/>.
+        /// local-secret snapshot renders the credential-free shape.
         /// </summary>
         protected AiAgentConfig GetDisplayHttpConfig(AgentConfiguratorSettings settings, ILogger? logger)
-            => settings.HasProjectKey
-                ? GetHttpConfig(settings.ForDisplay(), logger, HttpCredentialMode.AccessToken)
-                : GetHttpConfig(settings, logger);
+            => GetHttpConfig(settings, logger);
 
         /// <summary>
         /// Resolves a (possibly project-relative) skills path to an absolute filesystem path,

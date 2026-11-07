@@ -350,7 +350,7 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
         {
             lock (_gate)
             {
-                var account = CurrentAccountKeyLocked(out _);
+                var account = CurrentAccountKeyLocked();
                 if (account != null && _byAccount.ContainsKey(account))
                     _toolListMissed.Add(account);
             }
@@ -422,18 +422,6 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
             key = string.Empty;
             instance = null;
 
-            if (_strategy is AccountMcpStrategy accountStrategy)
-            {
-                var found = accountStrategy.Instances.GetInstanceByConnection(connectionId);
-                var owner = accountStrategy.Instances.GetAccountByConnection(connectionId);
-                if (found == null || owner == null)
-                    return false;
-                account = owner;
-                key = found.InstanceId;
-                instance = found;
-                return true;
-            }
-
             if (_strategy.AllowMultipleConnections)
                 return false;
 
@@ -441,23 +429,17 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
         }
 
         /// <summary>
-        /// The account bucket the CURRENT session routes within, or null when it has none: an oauth
-        /// session without identity (fail closed) or a multi-plugin strategy with no account scope.
+        /// The bucket the CURRENT session routes within, or null for a multi-plugin strategy with no single target.
         /// </summary>
-        string? CurrentAccountKeyLocked(out AccountMcpStrategy? accountStrategy)
-        {
-            accountStrategy = _strategy as AccountMcpStrategy;
-            if (accountStrategy != null)
-                return McpSessionTokenContext.CurrentIdentity?.AccountId;
-            return _strategy.AllowMultipleConnections ? null : SingleAccount;
-        }
+        string? CurrentAccountKeyLocked()
+            => _strategy.AllowMultipleConnections ? null : SingleAccount;
 
         Entry? FindOfflineForCurrentSessionLocked()
         {
             if (!Enabled)
                 return null;
 
-            var account = CurrentAccountKeyLocked(out var accountStrategy);
+            var account = CurrentAccountKeyLocked();
             if (account == null)
                 return null;
 
@@ -467,17 +449,7 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
                 return null;
 
             PruneExpired(bucket, now);
-            if (accountStrategy == null)
-                return bucket.Values.FirstOrDefault(e => e.ConnectionId == null); // at most one slot
-
-            var candidates = bucket.Values.Where(e => e.ConnectionId == null && e.Instance != null).ToList();
-            if (candidates.Count == 0)
-                return null;
-            var resolution = AccountInstances.ResolveAmong(candidates.Select(e => e.Instance!).ToList(),
-                McpSessionTokenContext.CurrentProjectPin, accountStrategy.ResolveStickySelection());
-            if (resolution.Kind != InstanceResolutionKind.Resolved || resolution.Instance == null)
-                return null;
-            return candidates.FirstOrDefault(e => ReferenceEquals(e.Instance, resolution.Instance));
+            return bucket.Values.FirstOrDefault(e => e.ConnectionId == null); // at most one slot
         }
 
         Dictionary<string, Entry> GetOrAddBucket(string account)

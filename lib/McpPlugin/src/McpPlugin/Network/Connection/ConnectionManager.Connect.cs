@@ -780,7 +780,6 @@ namespace com.RedPand.MCP.Plugin
                 {
                     _logger.LogWarning("{class}[{guid}] {method} Connection attempt failed for endpoint: {endpoint}. Exception: {exception}",
                         nameof(ConnectionManager), _guid, nameof(AttemptConnection), Endpoint, connectionTask.Exception?.Message);
-                    LogCredentialScopeRefusal(connectionTask.Exception);
                     if (IsObservableAuthRejection(connectionTask.Exception))
                         return ConnectionAttemptResult.AuthRejected;
                 }
@@ -815,30 +814,6 @@ namespace com.RedPand.MCP.Plugin
         /// returns false there — an auth failure at negotiate degrades to the ordinary failure
         /// branch, still bounded by the credential provider's dead-family verdict (C3.1).
         /// </summary>
-        /// <summary>
-        /// Surface a <see cref="CredentialScopeException"/> (the credential provider refused to send the account token
-        /// to a non-loopback Custom host) as an error carrying its own actionable message, not buried in an
-        /// AggregateException warning.
-        /// </summary>
-        void LogCredentialScopeRefusal(Exception? exception)
-        {
-            var refusal = FindCredentialScopeRefusal(exception);
-            if (refusal != null)
-                _logger.LogError("{class}[{guid}] {method} {message}",
-                    nameof(ConnectionManager), _guid, nameof(AttemptConnection), refusal.Message);
-        }
-
-        internal static CredentialScopeException? FindCredentialScopeRefusal(Exception? exception)
-        {
-            // AggregateException.InnerException is its first inner exception, which is where StartAsync puts it.
-            for (var depth = 0; exception != null && depth <= 8; depth++, exception = exception.InnerException)
-            {
-                if (exception is CredentialScopeException refusal)
-                    return refusal;
-            }
-            return null;
-        }
-
         private static bool IsObservableAuthRejection(Exception? exception)
         {
 #if NETSTANDARD2_1

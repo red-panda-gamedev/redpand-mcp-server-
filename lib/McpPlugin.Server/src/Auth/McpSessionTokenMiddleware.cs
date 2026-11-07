@@ -73,8 +73,6 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
         /// <summary>Machine-readable error code returned when a present pin cannot be parsed.</summary>
         public const string InvalidProjectPinError = "invalid_project_pin";
 
-        /// <summary>Machine-readable error code returned when a project key is used against another project's pin.</summary>
-        public const string ProjectPinMismatchError = "project_pin_mismatch";
 
         private readonly RequestDelegate _next;
 
@@ -84,24 +82,14 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
         {
             // ── Project-pin gate (design 04 D14) — runs BEFORE any ambient session state is set. ──
             // A pin that is PRESENT on the path but unparseable is REJECTED, never downgraded to
-            // "unpinned": the downgrade made AccountInstances.Resolve skip its strict pinned branch and
-            // fall back to sticky → single → MRU, so a caller that believed it was pinned to project A
-            // silently executed tool calls against an arbitrary sibling project B. ABSENT ≠ MALFORMED —
+            // "unpinned": the downgrade made routing skip its strict pinned branch and
+            // fall back to another project, so a caller that believed it was pinned to project A
+            // silently executed tool calls against a sibling project B. ABSENT ≠ MALFORMED —
             // a path carrying no /p/ marker stays genuinely unpinned and is unaffected.
             var pinParse = TryExtractProjectPin(context.Request.Path.Value, out var projectPin);
             if (pinParse == ProjectPinParse.Malformed)
             {
                 await WriteInvalidProjectPinAsync(context).ConfigureAwait(false);
-                return;
-            }
-
-            // ── Project-key pin binding (project-keys contract §5). ──
-            // A project key's authority is ONE project: a request with no path pin is routed as if it
-            // carried the key's pin; a request naming a DIFFERENT pin is refused outright (403), never
-            // routed. Account-wide credentials (JWT, PAT) carry no pin claim and are unaffected.
-            if (ResolveEffectiveProjectPin(pinParse, projectPin, context.User, out projectPin) == ProjectKeyPinCheck.Mismatch)
-            {
-                await WriteProjectPinMismatchAsync(context).ConfigureAwait(false);
                 return;
             }
 
@@ -134,22 +122,16 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
                     McpSessionTokenContext.CurrentToken = authHeader.Substring("Bearer ".Length).Trim();
             }
 
-            // OAuth account routing (mcp-authorize b3): resolve the request identity from the validated
-            // claims the TokenAuthenticationHandler OAuth path issued (sub → AccountId, scope → Role).
-            // Null-safe in legacy modes — no sub claim ⇒ null identity ⇒ token-equality routing unchanged.
+            // No mode issues a sub claim since the hosted account routing was removed, so this stays null:
+            // token-equality routing.
             McpSessionTokenContext.CurrentIdentity = ConnectionIdentity.FromPrincipal(context.User);
 
             // Publish the project pin captured above (null when the path carried no /p/ marker at all).
             McpSessionTokenContext.CurrentProjectPin = projectPin;
 
-            // Capture the MCP session id (mcp-authorize b4) and reload this session's sticky
-            // engine-instance selection so account routing honors it (design 04 step 2). The store is
-            // registered only in oauth mode — null in legacy/no-auth modes leaves selection untouched.
+            // Capture the MCP session id (mcp-authorize b4).
             var sessionId = context.Request.Headers.TryGetValue(SessionIdHeader, out var sid) ? sid.ToString() : null;
             McpSessionTokenContext.CurrentSessionId = string.IsNullOrEmpty(sessionId) ? null : sessionId;
-            var selectionStore = context.RequestServices?.GetService<ISessionSelectionStore>();
-            if (selectionStore != null)
-                McpSessionTokenContext.CurrentSelectedInstanceId = selectionStore.Get(sessionId);
 
             var remoteIp = context.Connection.RemoteIpAddress?.ToString();
             if (!string.IsNullOrEmpty(remoteIp))
@@ -248,58 +230,6 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
             }
 
             return sawMarker ? ProjectPinParse.Valid : ProjectPinParse.Absent;
-        }
-
-        /// <summary>Outcome of binding a request to a project key's pin (see <see cref="ResolveEffectiveProjectPin"/>).</summary>
-        public enum ProjectKeyPinCheck
-        {
-            /// <summary>The principal is not a project key — the path pin (or its absence) stands.</summary>
-            NotProjectKey = 0,
-            /// <summary>Project key; the path pin equals the key's pin, or was absent and now IS the key's pin.</summary>
-            Bound = 1,
-            /// <summary>Project key used against a different project's pin — the request must be refused (403).</summary>
-            Mismatch = 2,
-        }
-
-        /// <summary>
-        /// Applies the project-keys contract §5 to a parsed path pin: when <paramref name="user"/> carries a
-        /// <see cref="TokenAuthenticationHandler.ProjectPinClaimType"/> claim, an absent path pin becomes the
-        /// token pin, an equal one (case-insensitive) stands, and a different one is a
-        /// <see cref="ProjectKeyPinCheck.Mismatch"/>. Pure — shared by the middleware and the session layer so
-        /// both key the SAME effective pin.
-        /// </summary>
-        public static ProjectKeyPinCheck ResolveEffectiveProjectPin(ProjectPinParse pathParse, string? pathPin, ClaimsPrincipal? user, out string? effectivePin)
-        {
-            effectivePin = pathPin;
-            var tokenPin = user?.FindFirst(TokenAuthenticationHandler.ProjectPinClaimType)?.Value;
-            if (string.IsNullOrEmpty(tokenPin))
-                return ProjectKeyPinCheck.NotProjectKey;
-
-            if (pathParse != ProjectPinParse.Valid || string.IsNullOrEmpty(pathPin))
-            {
-                effectivePin = tokenPin!.ToLowerInvariant();
-                return ProjectKeyPinCheck.Bound;
-            }
-
-            if (string.Equals(pathPin, tokenPin, StringComparison.OrdinalIgnoreCase))
-                return ProjectKeyPinCheck.Bound;
-
-            effectivePin = null;
-            return ProjectKeyPinCheck.Mismatch;
-        }
-
-        /// <summary>
-        /// Refuses a project-key request aimed at another project's pin. Terminal — no handler, hub or tool
-        /// observes the request. Neither pin is echoed (the caller knows what it sent).
-        /// </summary>
-        static Task WriteProjectPinMismatchAsync(HttpContext context)
-        {
-            context.Response.StatusCode = StatusCodes.Status403Forbidden;
-            return context.Response.WriteAsJsonAsync(new
-            {
-                error = ProjectPinMismatchError,
-                message = "This project key is bound to a different project; it cannot access the project pin in the request path."
-            }, context.RequestAborted);
         }
 
         /// <summary>

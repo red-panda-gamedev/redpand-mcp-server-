@@ -15,9 +15,8 @@ using System.Net;
 namespace com.RedPand.MCP.Plugin
 {
     /// <summary>
-    /// Host classification for credential scoping. The stored ai-game.dev account credential may be sent to a
-    /// Custom (self-hosted) server only when that server is on this machine. The decision is made by parsing the
-    /// URL host — never by DNS — so a name that merely resolves to a loopback address does not qualify.
+    /// Host classification: is a URL on this machine. The decision is made by parsing the URL host — never by
+    /// DNS — so a name that merely resolves to a loopback address does not qualify.
     /// </summary>
     public static class HostScope
     {

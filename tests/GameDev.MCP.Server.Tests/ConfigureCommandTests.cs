@@ -90,20 +90,6 @@ namespace com.RedPand.MCP.Server.Tests
         }
 
         [Fact]
-        public void BuildPlan_RemoteUrl_UsesCloudModeAndPinnedHostedUrl()
-        {
-            RunInTempProject(projectRoot =>
-            {
-                var plan = ConfigureCommand.BuildPlan(
-                    new Dictionary<string, string> { ["agent"] = "claude-code", ["url"] = "https://ai-game.dev/mcp", ["project"] = projectRoot },
-                    FakeExe, FakeVersion);
-
-                Assert.Equal(ConnectionMode.Cloud, plan.Settings.ConnectionMode);
-                Assert.Contains("ai-game.dev/mcp/p/" + plan.ProjectPin, plan.ExpectedFileContent);
-            });
-        }
-
-        [Fact]
         public void BuildPlan_StdioTransport_UsesStdioConfig()
         {
             RunInTempProject(projectRoot =>
@@ -154,18 +140,24 @@ namespace com.RedPand.MCP.Server.Tests
         [Theory]
         [InlineData("http://localhost", ConnectionMode.Local)]
         [InlineData("http://127.0.0.1:8080", ConnectionMode.Local)]
-        [InlineData("https://ai-game.dev/mcp", ConnectionMode.Cloud)]
+        [InlineData("https://mcp.example.com/mcp", ConnectionMode.Local)]
         public void ResolveConnectionMode_Works(string host, ConnectionMode expected)
         {
             Assert.Equal(expected, ConfigureCommand.ResolveConnectionMode(host));
         }
 
         [Fact]
-        public void ResolveAuthOption_DefaultsByMode_ExplicitWins()
+        public void ResolveAuthOption_DefaultsToNone_ExplicitWins()
         {
-            Assert.Equal(Consts.MCP.Server.AuthOption.oauth, ConfigureCommand.ResolveAuthOption(null, ConnectionMode.Cloud));
             Assert.Equal(Consts.MCP.Server.AuthOption.none, ConfigureCommand.ResolveAuthOption(null, ConnectionMode.Local));
-            Assert.Equal(Consts.MCP.Server.AuthOption.none, ConfigureCommand.ResolveAuthOption("none", ConnectionMode.Cloud));
+            Assert.Equal(Consts.MCP.Server.AuthOption.token, ConfigureCommand.ResolveAuthOption("token", ConnectionMode.Local));
+        }
+
+        [Fact]
+        public void ResolveAuthOption_OAuth_IsRefused()
+        {
+            var ex = Assert.Throws<ConfigureCommand.ConfigureException>(() => ConfigureCommand.ResolveAuthOption("oauth", ConnectionMode.Local));
+            Assert.Contains("removed", ex.Message);
         }
 
         // ── helper: sandbox the process cwd + writes to a throwaway project dir ────────────

@@ -55,31 +55,16 @@ namespace com.RedPand.MCP.Server
             // sitting. 6h expired over a long day; 8h covers one. The cost is bounded and local — an
             // idle session pins its SseEventWriter buffer until evicted, and a single-user machine
             // has a handful of sessions, not thousands. Multi-tenant HOSTED deployments must not
-            // inherit this: ai-game.dev sets MCP_PLUGIN_IDLE_TIMEOUT_SECONDS=600 explicitly and
-            // relies on the Redis session-migration record for long-window resumption instead, which
-            // costs ~0.5 KB per session rather than tens of MiB.
+            // inherit this: set MCP_PLUGIN_IDLE_TIMEOUT_SECONDS explicitly there and rely on the
+            // Redis session-migration record for long-window resumption instead, which costs ~0.5 KB
+            // per session rather than tens of MiB.
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(Consts.MCP.Server.Env.IdleTimeoutSeconds)))
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.IdleTimeoutSeconds, "28800"); // 8 hours
 
-            // Transport-conditional authentication default (mcp-authorize, design 02 §"modes"):
-            // stdio => none, streamableHttp => oauth. DataArguments defaults auth to `none` for BOTH
-            // transports (it cannot know the host policy), so the host seeds the http default here.
-            // Mirroring the idle-timeout seed above, we only SEED the env var — never override an
-            // explicit choice — and DataArguments re-parses it below. oauth mode REQUIRES --auth-issuer
-            // AND --public-url (the shared AccountMcpStrategy.Validate throws otherwise), so http only
-            // defaults to oauth when both are configured; without them it stays on `none` with a loud
-            // warning rather than crashing the documented bare-run quickstart. See HostAuthDefaults.
+            // Authentication default: DataArguments defaults auth to `none` for both transports. An http
+            // server started without an explicit --auth runs on `none` with a loud warning. See HostAuthDefaults.
             var authProbe = new DataArguments(args);
-            var authDecision = HostAuthDefaults.Decide(
-                authProbe.ClientTransport,
-                HostAuthDefaults.IsAuthExplicitlySet(args),
-                hasAuthIssuer: !string.IsNullOrWhiteSpace(authProbe.AuthIssuer),
-                hasPublicUrl: !string.IsNullOrWhiteSpace(authProbe.PublicUrl));
-
-            if (authDecision == HostAuthDefaults.Decision.DefaultHttpToOauth)
-                Environment.SetEnvironmentVariable(
-                    Consts.MCP.Server.Env.Auth,
-                    Consts.MCP.Server.AuthOption.oauth.ToString());
+            var authDecision = HostAuthDefaults.Decide(authProbe.ClientTransport, HostAuthDefaults.IsAuthExplicitlySet(args));
 
             var httpUnauthenticatedFallback = authDecision == HostAuthDefaults.Decision.DefaultHttpToNoneWithWarning;
 
@@ -243,9 +228,9 @@ namespace com.RedPand.MCP.Server
             if (httpUnauthenticatedFallback)
             {
                 app.Logger.LogWarning(
-                    "streamableHttp is running WITHOUT authentication (auth=none) because --auth-issuer/--public-url "
-                    + "were not configured. For a network-exposed deployment set --auth oauth with --auth-issuer and "
-                    + "--public-url (see README § Authentication). Pass --auth none explicitly to silence this warning.");
+                    "streamableHttp is running WITHOUT authentication (auth=none). For a network-exposed deployment "
+                    + "set --auth token with --token <secret> (see README § Authentication). Pass --auth none explicitly "
+                    + "to silence this warning.");
             }
 
             app.Logger.LogInformation(

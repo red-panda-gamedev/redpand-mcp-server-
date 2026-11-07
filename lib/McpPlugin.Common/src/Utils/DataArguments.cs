@@ -23,12 +23,8 @@ namespace com.RedPand.MCP.Plugin.Common.Utils
         Consts.MCP.Server.AuthOption Authorization { get; }
         string? Token { get; }
 
-        // OAuth resource-server configuration (mcp-authorize b2)
-        string? AuthIssuer { get; }
+        // The server's public URL, an allowed browser origin (OriginValidationOptions).
         string? PublicUrl { get; }
-
-        // Optional server-side metadata / fetch-base override (auth-fixes L2a / Gap B). Null unless set.
-        string? AuthMetadataUrl { get; }
         string? Bind { get; }
 
         // Session project pin for stdio account routing (mcp-authorize b3, design 04 D14)
@@ -139,20 +135,8 @@ namespace com.RedPand.MCP.Plugin.Common.Utils
         public Consts.MCP.Server.AuthOption Authorization { get; private set; } = Consts.MCP.Server.AuthOption.none;
         public string? Token { get; private set; }
 
-        // OAuth resource-server configuration (mcp-authorize b2)
-        public string? AuthIssuer { get; private set; }
+        /// <summary>The server's public URL, an allowed browser origin (OriginValidationOptions).</summary>
         public string? PublicUrl { get; private set; }
-
-        /// <summary>
-        /// Optional server-side metadata / fetch-base override (auth-fixes L2a / Gap B). When set, the
-        /// OAuth resource server fetches JWKS / introspection / enrollment from this
-        /// base instead of <see cref="AuthIssuer"/>; the token <c>iss</c> claim check and the RFC 9728
-        /// PRM <c>authorization_servers</c> stay on <see cref="AuthIssuer"/> (client-facing). Null
-        /// (default, incl. all of prod) → behavior is byte-identical to deriving from the issuer. Set
-        /// via <c>--auth-metadata-url</c> / <c>MCP_AUTH_METADATA_URL</c> for a fully-local OAuth
-        /// deployment where the client-facing issuer host is unreachable from inside the RS container.
-        /// </summary>
-        public string? AuthMetadataUrl { get; private set; }
 
         /// <summary>
         /// Bind address for the streamableHttp Kestrel listener. <c>null</c>/empty defaults to
@@ -256,19 +240,9 @@ namespace com.RedPand.MCP.Plugin.Common.Utils
             if (envAuth != null && Enum.TryParse(envAuth, true, out Consts.MCP.Server.AuthOption parsedEnvAuth))
                 Authorization = parsedEnvAuth;
 
-            // --- OAuth resource-server variables ---
-
-            var envAuthIssuer = Environment.GetEnvironmentVariable(Consts.MCP.Server.Env.AuthIssuer);
-            if (envAuthIssuer != null)
-                AuthIssuer = envAuthIssuer;
-
             var envPublicUrl = Environment.GetEnvironmentVariable(Consts.MCP.Server.Env.PublicUrl);
             if (envPublicUrl != null)
                 PublicUrl = envPublicUrl;
-
-            var envAuthMetadataUrl = Environment.GetEnvironmentVariable(Consts.MCP.Server.Env.AuthMetadataUrl);
-            if (envAuthMetadataUrl != null)
-                AuthMetadataUrl = envAuthMetadataUrl;
 
             var envBind = Environment.GetEnvironmentVariable(Consts.MCP.Server.Env.Bind);
             if (envBind != null)
@@ -373,19 +347,9 @@ namespace com.RedPand.MCP.Plugin.Common.Utils
             if (argAuth != null && Enum.TryParse(argAuth, true, out Consts.MCP.Server.AuthOption parsedArgAuth))
                 Authorization = parsedArgAuth;
 
-            // --- OAuth resource-server variables ---
-
-            var argAuthIssuer = commandLineArgs.GetValueOrDefault(Consts.MCP.Server.Args.AuthIssuer.TrimStart('-'));
-            if (argAuthIssuer != null)
-                AuthIssuer = argAuthIssuer;
-
             var argPublicUrl = commandLineArgs.GetValueOrDefault(Consts.MCP.Server.Args.PublicUrl.TrimStart('-'));
             if (argPublicUrl != null)
                 PublicUrl = argPublicUrl;
-
-            var argAuthMetadataUrl = commandLineArgs.GetValueOrDefault(Consts.MCP.Server.Args.AuthMetadataUrl.TrimStart('-'));
-            if (argAuthMetadataUrl != null)
-                AuthMetadataUrl = argAuthMetadataUrl;
 
             var argBind = commandLineArgs.GetValueOrDefault(Consts.MCP.Server.Args.Bind.TrimStart('-'));
             if (argBind != null)

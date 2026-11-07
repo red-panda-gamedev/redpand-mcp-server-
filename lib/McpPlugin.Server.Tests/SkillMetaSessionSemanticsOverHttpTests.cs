@@ -213,41 +213,6 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         // oauth mode — does authentication reorder anything?
         // ─────────────────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// The same matrix under <c>auth=oauth</c>. This is the case that could have turned a
-        /// lucky-but-working ordering into a silent failure: <c>UseAuthentication</c> and
-        /// <c>UseAuthorization</c> bracket <see cref="Auth.McpSessionTokenMiddleware"/>, and the MCP
-        /// endpoint carries <c>RequireAuthorization</c>. Measured, not assumed.
-        /// </summary>
-        [Theory]
-        [InlineData(false, false, false)]
-        [InlineData(false, true, false)]
-        [InlineData(true, false, true)]
-        [InlineData(true, true, true)]
-        public async Task ToolsList_SkillMetadata_HasTheSameSessionSemanticsUnderOAuth(
-            bool headerOnInitialize, bool headerOnToolsList, bool expectSkillKeys)
-        {
-            var hub = new AmbientCaptureToolHub();
-            await using var host = await OAuthMcpHost.StartAsync(s => s.AddSingleton<IClientToolHub>(hub));
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-
-            var sessionId = await host.HandshakeAsync(client, "skill-meta-oauth-semantics",
-                initializeHeaders: headerOnInitialize ? SkillMetaOptIn : null);
-
-            var body = await host.CallAsync(client, sessionId, "tools/list", id: 2,
-                headers: headerOnToolsList ? SkillMetaOptIn : null);
-
-            AssertMatrixCell(body, expectSkillKeys,
-                $"oauth: initialize={headerOnInitialize}, tools/list={headerOnToolsList}",
-                expectServerNativeTools: true);
-
-            // The identity really was resolved, i.e. this ran as an AUTHENTICATED session and not as
-            // an anonymous one that happened to be accepted. Without it, "oauth behaves the same"
-            // could be satisfied by a host that never authenticated anything.
-            hub.LastListSnapshot.AccountId.ShouldBe(host.AccountId,
-                $"the session must be authenticated; got {hub.LastListSnapshot}");
-        }
-
         // ─────────────────────────────────────────────────────────────────────
         // the sibling axis on the same ambient context
         // ─────────────────────────────────────────────────────────────────────

@@ -17,7 +17,6 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using com.RedPand.MCP.Plugin.Common;
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
 using com.RedPand.MCP.Plugin.Server.Webhooks.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
@@ -34,68 +33,21 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
         public const string ScopeClaimType = "scope";
         public const string ClientIdClaimType = "client_id";
 
-        /// <summary>
-        /// Claim carrying the pin a project key is bound to (project-keys contract §5). Present only for a
-        /// project-key principal; <see cref="McpSessionTokenMiddleware"/> enforces it against the path pin.
-        /// </summary>
-        public const string ProjectPinClaimType = "agd_project_pin";
-
         readonly IAuthorizationWebhookService _authorizationWebhookService;
-        readonly IOAuthTokenValidator? _oauthValidator;
-        bool _authorizationUnavailable;
-        readonly OAuthResourceServerConfig? _oauthConfig;
 
         public TokenAuthenticationHandler(
             IOptionsMonitor<TokenAuthenticationOptions> options,
             ILoggerFactory logger,
             UrlEncoder encoder,
-            IAuthorizationWebhookService authorizationWebhookService,
-            IOAuthTokenValidator? oauthValidator = null,
-            OAuthResourceServerConfig? oauthConfig = null)
+            IAuthorizationWebhookService authorizationWebhookService)
             : base(options, logger, encoder)
         {
             _authorizationWebhookService = authorizationWebhookService ?? throw new ArgumentNullException(nameof(authorizationWebhookService));
-            _oauthValidator = oauthValidator;
-            _oauthConfig = oauthConfig;
         }
 
         protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
         {
-            if (_authorizationUnavailable)
-            {
-                Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                Response.Headers.RetryAfter = "5";
-                Response.Headers.Remove("WWW-Authenticate");
-                await Response.WriteAsJsonAsync(new
-                {
-                    error = "temporarily_unavailable",
-                    error_description = "Authorization service is temporarily unavailable. Retry with the same credentials."
-                });
-                return;
-            }
-
             Response.StatusCode = 401;
-
-            if (Options.OAuthMode && _oauthConfig != null)
-            {
-                // MCP OAuth resource-server challenge (RFC 9728): the client MUST be able to discover
-                // the authorization server from the ABSOLUTE resource_metadata URL, plus the scope.
-                var metadataUrl = _oauthConfig.ProtectedResourceMetadataUrl();
-                Response.Headers.WWWAuthenticate =
-                    $"Bearer resource_metadata=\"{metadataUrl}\", scope=\"{OAuthResourceServerConfig.AgentScope}\""
-                    // RFC 6750: report a PRESENTED invalid token in the challenge,
-                    // where OAuth clients read it. An unauthenticated discovery
-                    // request must not be labelled as a rejected credential.
-                    + (TryGetBearerToken(out _) ? ", error=\"invalid_token\"" : "");
-                await Response.WriteAsJsonAsync(new
-                {
-                    error = "invalid_token",
-                    error_description = "Authentication required. Discover the authorization server via the resource_metadata URL and present a Bearer access token.",
-                    resource_metadata = metadataUrl,
-                    scope = OAuthResourceServerConfig.AgentScope
-                });
-                return;
-            }
 
             var baseUrl = $"{Request.Scheme}://{Request.Host}";
             Response.Headers.WWWAuthenticate = $"Bearer realm=\"MCP Plugin Server\", resource=\"{baseUrl}\"";
@@ -118,15 +70,13 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
 
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
-            // Three mutually-exclusive modes, chosen by the resolved connection strategy:
-            //   • OAuthMode (mcp-authorize b2) — validate ES256 JWT / opaque-PAT introspection.
+            // Two modes, chosen by the resolved connection strategy (RedPand: the OAuth resource-server mode
+            // of the hosted cloud was removed):
             //   • LocalTokenMode (mcp-authorize g6) — offline shared-secret: constant-time compare the
             //     presented bearer against the configured --token secret.
             //   • neither → `none` (offline / local dev / CI): anonymous, no token accepted.
             // The legacy multi-tier shared-token / DCR token-equality paths were removed in b5; the g6
             // local-token path is a single constant-time comparison, not their reintroduction.
-            if (Options.OAuthMode)
-                return HandleOAuthAuthenticateAsync();
             if (Options.LocalTokenMode)
                 return Task.FromResult(HandleLocalTokenAuthenticate());
             return Task.FromResult(AuthenticateResult.NoResult());
@@ -165,74 +115,6 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
             return AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName));
         }
 
-        // ── OAuth resource-server path (mcp-authorize b2) ─────────────────────────────────────────
-        async Task<AuthenticateResult> HandleOAuthAuthenticateAsync()
-        {
-            try
-            {
-                return await AuthenticateOAuthCoreAsync();
-            }
-            catch (AuthorizationUnavailableException ex)
-            {
-                _authorizationUnavailable = true;
-                Logger.LogWarning(ex, "MCP authorization dependency unavailable; refusing access for retry.");
-                return AuthenticateResult.Fail(ex);
-            }
-        }
-
-        async Task<AuthenticateResult> AuthenticateOAuthCoreAsync()
-        {
-            if (!TryGetBearerToken(out var token))
-            {
-                // No/empty/non-Bearer credential. On the hub path stay silent (BaseHub does its own
-                // auth). Elsewhere NoResult lets the RequireAuthorization pipeline issue the 401
-                // resource_metadata challenge.
-                return AuthenticateResult.NoResult();
-            }
-
-            if (_oauthValidator == null)
-            {
-                Logger.LogError("OAuth mode is enabled but no token validator is configured.");
-                throw new AuthorizationUnavailableException("OAuth validator not configured.");
-            }
-
-            var validation = await _oauthValidator.ValidateAsync(token, Context.RequestAborted);
-            if (!validation.Succeeded)
-            {
-                if (!IsHubPath())
-                {
-                    Logger.LogWarning(
-                        "MCP OAuth auth rejected: {Reason}. RemoteIp: {RemoteIpAddress}, UserAgent: {UserAgent}, RequestPath: {RequestPath}, TokenFingerprint: {TokenFingerprint}",
-                        validation.FailureReason, GetClientIpAddress(), Request.Headers.UserAgent.ToString(),
-                        Request.Path.Value, FingerprintToken(token));
-                }
-                return IsHubPath()
-                    ? AuthenticateResult.NoResult()
-                    : AuthenticateResult.Fail($"Invalid token: {validation.FailureReason}");
-            }
-
-            // Optional enforcement channel (hosted account-status revocation). NoOp locally.
-            if (!await AuthorizeAiAgentAsync(token))
-                return AuthenticateResult.Fail("Authorization webhook rejected the connection.");
-
-            var claims = new List<Claim> { new Claim(TokenClaimType, token) };
-            if (!string.IsNullOrEmpty(validation.Subject))
-            {
-                claims.Add(new Claim(SubjectClaimType, validation.Subject!));
-                claims.Add(new Claim(ClaimTypes.NameIdentifier, validation.Subject!));
-            }
-            if (!string.IsNullOrEmpty(validation.Scope))
-                claims.Add(new Claim(ScopeClaimType, validation.Scope!));
-            if (!string.IsNullOrEmpty(validation.ClientId))
-                claims.Add(new Claim(ClientIdClaimType, validation.ClientId!));
-            if (!string.IsNullOrEmpty(validation.ProjectPin))
-                claims.Add(new Claim(ProjectPinClaimType, validation.ProjectPin!));
-
-            var identity = new ClaimsIdentity(claims, SchemeName);
-            var principal = new ClaimsPrincipal(identity);
-            return AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName));
-        }
-
         bool TryGetBearerToken(out string token)
         {
             token = string.Empty;
@@ -245,23 +127,12 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
 
         // True when the request targets the SignalR hub endpoint. Used to silence the
         // "[7] McpPluginToken was not authenticated" info log noise on hub probes — see
-        // the invalid-token branch in HandleOAuthAuthenticateAsync (BaseHub does its own auth).
+        // the invalid-token branch in HandleLocalTokenAuthenticate (BaseHub does its own auth).
         bool IsHubPath()
         {
             var path = Request.Path.Value;
             return !string.IsNullOrEmpty(path)
                 && path.StartsWith(Consts.Hub.RemoteApp, StringComparison.OrdinalIgnoreCase);
-        }
-
-        Task<bool> AuthorizeAiAgentAsync(string token)
-        {
-            return _authorizationWebhookService.AuthorizeAiAgentAsync(
-                connectionId: Context.TraceIdentifier,
-                bearerToken: token,
-                remoteIpAddress: GetClientIpAddress(),
-                userAgent: Request.Headers.UserAgent.ToString() is { Length: > 0 } ua ? ua : null,
-                requestPath: Request.Path.Value,
-                cancellationToken: Context.RequestAborted);
         }
 
         string? GetClientIpAddress()
@@ -290,17 +161,8 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
     public class TokenAuthenticationOptions : AuthenticationSchemeOptions
     {
         /// <summary>
-        /// When true, the handler runs the OAuth resource-server validation path (ES256/JWKS +
-        /// introspection). Mutually exclusive with <see cref="LocalTokenMode"/>; when both are false
-        /// the handler is anonymous (<c>none</c> mode). The legacy multi-tier shared-token / DCR
-        /// token-equality options were removed in mcp-authorize b5.
-        /// </summary>
-        public bool OAuthMode { get; set; }
-
-        /// <summary>
         /// When true, the handler runs the offline local-token path (mcp-authorize g6): the presented
-        /// bearer is compared against <see cref="LocalToken"/> in constant time. Mutually exclusive with
-        /// <see cref="OAuthMode"/>. Set by <c>LocalTokenMcpStrategy.ConfigureAuthentication</c>.
+        /// bearer is compared against <see cref="LocalToken"/> in constant time. Set by <c>LocalTokenMcpStrategy.ConfigureAuthentication</c>.
         /// </summary>
         public bool LocalTokenMode { get; set; }
 

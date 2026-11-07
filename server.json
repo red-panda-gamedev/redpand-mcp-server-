@@ -1,17 +1,16 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.IvanMurzak/Unity-MCP",
-  "description": "Make games with AI: one MCP server for the Unity-MCP, Godot-MCP and Unreal-MCP editor plugins.",
+  "name": "io.github.red-panda-gamedev/redpand-mcp",
+  "description": "RedPand MCP server: lets AI agents drive the Unity Editor through the RedPand MCP plugin.",
   "repository": {
-    "url": "https://github.com/IvanMurzak/Unity-MCP",
+    "url": "https://github.com/red-panda-gamedev/redpand-mcp-server-",
     "source": "github"
   },
-  "version": "9.4.0",
+  "version": "1.0.0",
   "packages": [
     {
-      "registryType": "nuget",
-      "identifier": "com.RedPand.MCP.Server",
-      "version": "9.4.0",
+      "registryType": "oci",
+      "identifier": "ghcr.io/red-panda-gamedev/redpand-mcp-server:1.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -43,27 +42,28 @@
         },
         {
           "name": "MCP_AUTH",
-          "description": "Authentication mode: none or oauth. Default depends on transport: stdio -> none (offline/local/CI), streamableHttp -> oauth when MCP_AUTH_ISSUER + MCP_PUBLIC_URL are set, otherwise none. oauth validates ES256 JWTs (via cached JWKS) issued by MCP_AUTH_ISSUER, audienced to MCP_PUBLIC_URL.",
+          "description": "Authentication mode: none (default) or token. token gates the plugin connection and the HTTP endpoint on MCP_PLUGIN_TOKEN.",
           "format": "string",
           "default": "none",
           "choices": [
             "none",
-            "oauth"
+            "token"
           ]
         },
         {
-          "name": "MCP_AUTH_ISSUER",
-          "description": "OAuth authorization-server URL (e.g. https://ai-game.dev). Required when MCP_AUTH=oauth.",
-          "format": "string"
+          "name": "MCP_PLUGIN_TOKEN",
+          "description": "The shared secret for MCP_AUTH=token.",
+          "format": "string",
+          "isSecret": true
         },
         {
           "name": "MCP_PUBLIC_URL",
-          "description": "This server's canonical public resource URL (its token audience, e.g. https://ai-game.dev/mcp). Required when MCP_AUTH=oauth; also seeds the Origin allow-list.",
+          "description": "This server's public URL; its origin is allowed for browser clients.",
           "format": "string"
         },
         {
           "name": "MCP_BIND",
-          "description": "Network bind address: loopback (default), any (0.0.0.0), or a specific IP. Hosted deploys reachable by a reverse proxy set MCP_BIND=0.0.0.0.",
+          "description": "Network bind address: loopback (default), any (0.0.0.0), or a specific IP.",
           "format": "string",
           "default": "loopback"
         },

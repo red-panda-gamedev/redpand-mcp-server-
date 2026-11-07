@@ -15,25 +15,11 @@ using com.RedPand.MCP.Plugin.Common.Utils;
 namespace com.RedPand.MCP.Server.Startup
 {
     /// <summary>
-    /// Host-level policy for the transport-conditional authentication default introduced with the
-    /// mcp-authorize redesign (design 02 §"GameDev-MCP-Server modes"): <b>stdio defaults to
-    /// <c>none</c></b> (offline / local dev / CI) and <b>streamableHttp defaults to <c>oauth</c></b>
-    /// (the authenticated resource-server path).
-    /// <para>
-    /// The shared <see cref="DataArguments"/> parser defaults <see cref="DataArguments.Authorization"/>
-    /// to <see cref="Consts.MCP.Server.AuthOption.none"/> for BOTH transports (it cannot know the
-    /// host's default policy), so this class decides whether the host should upgrade an unset http auth
-    /// to <c>oauth</c>. It is a pure decision so the policy is unit-testable without booting Kestrel.
-    /// </para>
-    /// <para>
-    /// Guard rail: <c>oauth</c> mode requires <c>--auth-issuer</c> AND <c>--public-url</c> — the shared
-    /// library's <c>AccountMcpStrategy.Validate</c> throws at startup when either is missing. So the
-    /// host defaults http to <c>oauth</c> ONLY when both are present; otherwise it leaves http on
-    /// <c>none</c> and emits a loud warning rather than crashing the documented bare-run quickstart
-    /// (<c>docker run … aigamedeveloper/mcp-server</c> / <c>gamedev-mcp-server --port 8080</c>). An
-    /// explicit <c>--auth</c>/<c>--authorization</c> (or <c>MCP_AUTH</c>/<c>MCP_AUTHORIZATION</c>) always
-    /// wins and is left untouched.
-    /// </para>
+    /// Host-level policy for the authentication default. <see cref="DataArguments"/> defaults auth to
+    /// <see cref="Consts.MCP.Server.AuthOption.none"/> for both transports; an http server started without an
+    /// explicit <c>--auth</c> stays on <c>none</c> and the host warns the operator. RedPand: the hosted
+    /// cloud's <c>oauth</c> default for http went with the cloud. An explicit <c>--auth</c>/<c>--authorization</c>
+    /// (or <c>MCP_AUTH</c>/<c>MCP_AUTHORIZATION</c>) always wins and is left untouched.
     /// </summary>
     public static class HostAuthDefaults
     {
@@ -42,10 +28,7 @@ namespace com.RedPand.MCP.Server.Startup
             /// <summary>Explicit auth was given, or transport is stdio — leave DataArguments' value as-is.</summary>
             LeaveAsConfigured,
 
-            /// <summary>Http with issuer + public-url present — seed the http default of <c>oauth</c>.</summary>
-            DefaultHttpToOauth,
-
-            /// <summary>Http but oauth is not configurable — stay on <c>none</c> and warn the operator.</summary>
+            /// <summary>Http without an explicit auth — stay on <c>none</c> and warn the operator.</summary>
             DefaultHttpToNoneWithWarning
         }
 
@@ -67,26 +50,12 @@ namespace com.RedPand.MCP.Server.Startup
                 || parsed.ContainsKey(Consts.MCP.Server.Args.Authorization);
         }
 
-        /// <summary>
-        /// Decide the host's auth default for the resolved transport. See the class remarks for the
-        /// full policy. Pure — no side effects.
-        /// </summary>
-        public static Decision Decide(
-            Consts.MCP.Server.TransportMethod transport,
-            bool authExplicitlySet,
-            bool hasAuthIssuer,
-            bool hasPublicUrl)
+        /// <summary>Decide the host's auth default for the resolved transport. Pure — no side effects.</summary>
+        public static Decision Decide(Consts.MCP.Server.TransportMethod transport, bool authExplicitlySet)
         {
-            if (authExplicitlySet)
+            if (authExplicitlySet || transport != Consts.MCP.Server.TransportMethod.streamableHttp)
                 return Decision.LeaveAsConfigured;
-
-            // stdio (and the defensive unknown case) keep DataArguments' `none` default.
-            if (transport != Consts.MCP.Server.TransportMethod.streamableHttp)
-                return Decision.LeaveAsConfigured;
-
-            return (hasAuthIssuer && hasPublicUrl)
-                ? Decision.DefaultHttpToOauth
-                : Decision.DefaultHttpToNoneWithWarning;
+            return Decision.DefaultHttpToNoneWithWarning;
         }
     }
 }

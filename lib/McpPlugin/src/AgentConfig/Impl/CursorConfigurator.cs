@@ -42,6 +42,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
             AgentConfiguratorSettings settings, TransportMethod transport, ILogger? logger)
             => TroubleshootingSection(
                 "- '.cursor/mcp.json' file must have no json syntax errors.",
-                "- Open Cursor settings window, go to 'MCP Servers' to restart ai-game-developer or to get more information about the available MCP tools and the status of the server.");
+                "- Open Cursor settings window, go to 'MCP Servers' to restart redpand or to get more information about the available MCP tools and the status of the server.");
     }
 }

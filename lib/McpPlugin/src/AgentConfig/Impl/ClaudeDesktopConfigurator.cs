@@ -39,12 +39,10 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
         // as "not valid MCP server configurations"; remote servers go through its Connectors UI instead.
         public override bool SupportsTransport(TransportMethod transport) => transport == TransportMethod.stdio;
 
-        // Claude reaches a custom connector from Anthropic's cloud, never from this machine: the public Cloud URL
-        // works, a local (loopback / LAN) server does not. Nothing is written, so the user adds it by hand once.
+        // Claude reaches a custom connector from Anthropic's cloud, never from this machine, so a local (loopback /
+        // LAN) server works over stdio only. (The hosted Cloud URL, the one http case, was removed.)
         public override AgentSetupKind GetSetupKind(AgentConfiguratorSettings settings, TransportMethod transport)
-            => transport == TransportMethod.stdio ? AgentSetupKind.ConfigFile
-                : transport == TransportMethod.streamableHttp && settings.ConnectionMode == ConnectionMode.Cloud ? AgentSetupKind.Manual
-                : AgentSetupKind.Unsupported;
+            => transport == TransportMethod.stdio ? AgentSetupKind.ConfigFile : AgentSetupKind.Unsupported;
 
         protected override IReadOnlyList<ConfigurationSection> BuildManualSetupSections(AgentConfiguratorSettings settings)
             => new[]

@@ -63,10 +63,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
                 ?? throw new InvalidCastException($"Expected TomlAiAgentConfig for Codex HTTP configuration but got {config.GetType().Name}");
 
             // Local token-mode secret / explicit PAT (mcp-authorize b6): Codex reads it from the GAME_DEV_AUTH_TOKEN
-            // env var, so that secret never lands in the file. Everything else — the Cloud project key (a static
-            // http_headers inline table, project-keys contract §7) and the credential-free OAuth shape — is the
-            // shared writer's job.
-            if (credentialMode == HttpCredentialMode.AccessToken && !settings.HasProjectKey && !string.IsNullOrEmpty(settings.Token))
+            // env var, so that secret never lands in the file. The credential-free shape is the shared writer's job.
+            if (credentialMode == HttpCredentialMode.AccessToken && !string.IsNullOrEmpty(settings.Token))
             {
                 tomlConfig.SetPropertyToRemove(TomlAiAgentConfig.HttpHeadersKey);
                 tomlConfig.SetProperty(EnvVarNameBearerToken, EnvVarNameAuthToken, requiredForConfiguration: true);
@@ -108,21 +106,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
                         ConfigurationItem.Description("1. Open or create file '.codex/config.toml'"),
                         ConfigurationItem.Description("2. Copy and paste the configuration TOML into the file."),
                         ConfigurationItem.ReadOnlyField(GetStdioConfig(settings, logger).ExpectedFileContent)
-                    })
-                };
-            }
-
-            if (settings.HasProjectKey)
-            {
-                // Cloud project key: the written config carries a static Authorization header
-                // (http_headers), which `codex mcp add` cannot express — so the manual path is the TOML
-                // snippet (key redacted in the preview), never the env-var flow below.
-                return new[]
-                {
-                    new ConfigurationSection("Configuration", true, new[]
-                    {
-                        ConfigurationItem.Description($"Use the Configure button to write the MCP entry, including this project's key, into '.codex/config.toml'."),
-                        ConfigurationItem.ReadOnlyField(GetDisplayHttpConfig(settings, logger).ExpectedFileContent)
                     })
                 };
             }

@@ -66,9 +66,9 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         // ───────────────── oauth mode: pinned paths carry the same 401 gate as /mcp ─────────────────
 
         [Fact]
-        public async Task OAuthMode_PinnedPaths_RequireAuthorization_Return401()
+        public async Task TokenMode_PinnedPaths_RequireAuthorization_Return401()
         {
-            await using var host = await StartHostAsync(Consts.MCP.Server.AuthOption.oauth);
+            await using var host = await StartHostAsync(Consts.MCP.Server.AuthOption.token);
             using var client = NewClient(host);
 
             // Anonymous (no bearer): /mcp challenges with 401. The pinned paths must too — a 401 proves
@@ -79,7 +79,7 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
                 resp.StatusCode.ShouldBe(HttpStatusCode.Unauthorized, $"{path} must be mapped AND gated (401), not 404");
             }
 
-            // Control: an unmapped path 404s even in oauth mode — distinguishes mapped-and-gated from unmapped.
+            // Control: an unmapped path 404s even in token mode — distinguishes mapped-and-gated from unmapped.
             using var unmapped = await client.SendAsync(InitializeRequest("/definitely-not-mapped"), HttpCompletionOption.ResponseHeadersRead);
             unmapped.StatusCode.ShouldBe(HttpStatusCode.NotFound);
         }
@@ -160,8 +160,8 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
 
         static async Task<RunningHost> StartHostAsync(Consts.MCP.Server.AuthOption mode)
         {
-            var args = mode == Consts.MCP.Server.AuthOption.oauth
-                ? new[] { "client-transport=streamableHttp", "auth=oauth", "auth-issuer=https://as.example", "public-url=http://127.0.0.1:23999" }
+            var args = mode == Consts.MCP.Server.AuthOption.token
+                ? new[] { "client-transport=streamableHttp", "auth=token", "token=pinned-path-secret" }
                 : new[] { "client-transport=streamableHttp", "auth=none" };
             var dataArguments = new DataArguments(args);
 

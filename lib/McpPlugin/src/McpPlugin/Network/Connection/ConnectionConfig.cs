@@ -46,17 +46,10 @@ namespace com.RedPand.MCP.Plugin
         public virtual int ConnectTimeoutSeconds { get; set; } = 0;
 
         /// <summary>
-        /// Credential provider callback (mcp-authorize b7): returns the current, auto-refreshed account
-        /// access token (an ES256 JWT) to present on the SignalR connection, or <c>null</c> for an
-        /// anonymous connection (a <c>none</c>-mode / offline local server). This replaces the removed
-        /// static <c>Token</c> string and the <c>MCP_PLUGIN_TOKEN</c> shared-token plumbing: the token is
-        /// no longer a fixed value read from an env/arg, it is fetched fresh on every (re)connect so a
-        /// proactively-refreshed JWT is always presented. The token always travels in the
+        /// Credential provider callback (mcp-authorize b7): returns the bearer token to present on the SignalR
+        /// connection (the local server's <c>token</c>-mode secret), or <c>null</c> for an anonymous connection
+        /// (a <c>none</c>-mode server). It is called on every (re)connect. The token always travels in the
         /// <c>Authorization</c> header (never a query param) — see <see cref="HubConnectionProvider"/>.
-        /// Hosts wire this to <c>PluginCredentialProvider.AsAccessTokenProvider()</c> (machine-store
-        /// auto-adopt + refresh); leaving it null keeps the anonymous local-server behaviour.
-        /// For a Custom (self-hosted) connection in <c>oauth</c> mode, route the account token through
-        /// <see cref="CustomOAuthCredentialPolicy.ResolveAsync"/>: it reaches loopback hosts only.
         /// </summary>
         public virtual Func<Task<string?>>? CredentialProvider { get; set; }
 

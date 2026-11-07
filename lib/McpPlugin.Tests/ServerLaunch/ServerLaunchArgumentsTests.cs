@@ -53,8 +53,6 @@ namespace com.RedPand.MCP.Plugin.ServerLaunch.Tests
 
             args.ShouldContain($"{Args.Auth}={Consts.MCP.Server.AuthOption.token}");
             args.ShouldContain($"{Args.Token}=the-secret");
-            // Token mode never emits the OAuth resource-server args.
-            args.ShouldNotContain($"{Args.AuthIssuer}=");
         }
 
         [Theory]
@@ -68,38 +66,6 @@ namespace com.RedPand.MCP.Plugin.ServerLaunch.Tests
                 clientTransport: Consts.MCP.Server.TransportMethod.streamableHttp,
                 authOption: Consts.MCP.Server.AuthOption.token,
                 token: token));
-        }
-
-        [Fact]
-        public void Build_OAuth_EmitsIssuerAndPublicUrl_NoToken()
-        {
-            var args = ServerLaunchArguments.Build(
-                port: 7000, pluginTimeoutMs: 20000,
-                clientTransport: Consts.MCP.Server.TransportMethod.streamableHttp,
-                authOption: Consts.MCP.Server.AuthOption.oauth,
-                authIssuer: "https://ai-game.dev",
-                publicUrl: "http://localhost:7000/mcp/p/abcd1234");
-
-            args.ShouldContain($"{Args.Auth}={Consts.MCP.Server.AuthOption.oauth}");
-            args.ShouldContain($"{Args.AuthIssuer}=https://ai-game.dev");
-            args.ShouldContain($"{Args.PublicUrl}=http://localhost:7000/mcp/p/abcd1234");
-            // OAuth mode carries no static token.
-            args.ShouldNotContain($"{Args.Token}=");
-        }
-
-        [Theory]
-        [InlineData(null, "http://localhost:7000")]
-        [InlineData("https://ai-game.dev", null)]
-        [InlineData("", "http://localhost:7000")]
-        [InlineData("https://ai-game.dev", "")]
-        public void Build_OAuth_MissingIssuerOrPublicUrl_Throws(string? issuer, string? publicUrl)
-        {
-            Should.Throw<ArgumentException>(() => ServerLaunchArguments.Build(
-                port: 7000, pluginTimeoutMs: 20000,
-                clientTransport: Consts.MCP.Server.TransportMethod.streamableHttp,
-                authOption: Consts.MCP.Server.AuthOption.oauth,
-                authIssuer: issuer,
-                publicUrl: publicUrl));
         }
 
         [Fact]

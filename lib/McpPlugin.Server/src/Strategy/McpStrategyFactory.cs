@@ -27,9 +27,11 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
                 case Consts.MCP.Server.AuthOption.none:
                     return new NoAuthMcpStrategy();
 
-                // mcp-authorize b3: oauth mode is the account+instance pairing plane.
+                // RedPand: the oauth mode was the hosted account plane, removed with the cloud.
                 case Consts.MCP.Server.AuthOption.oauth:
-                    return new AccountMcpStrategy();
+                    throw new ArgumentException(
+                        $"auth={Consts.MCP.Server.AuthOption.oauth} was removed with the hosted cloud. " +
+                        $"Use {Consts.MCP.Server.AuthOption.token} (a local --token) or {Consts.MCP.Server.AuthOption.none}.");
 
                 // mcp-authorize g6: offline shared-secret mode — a loopback single-project server
                 // gated on a single static token, validated with a constant-time compare.
@@ -51,7 +53,7 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
                 default:
                     throw new ArgumentException(
                         $"Unsupported auth option: {mode}. " +
-                        $"Supported auth options are: {Consts.MCP.Server.AuthOption.none}, {Consts.MCP.Server.AuthOption.oauth}, {Consts.MCP.Server.AuthOption.token} (and the deprecated {Consts.MCP.Server.AuthOption.required} alias).");
+                        $"Supported auth options are: {Consts.MCP.Server.AuthOption.none}, {Consts.MCP.Server.AuthOption.token} (and the deprecated {Consts.MCP.Server.AuthOption.required} alias).");
             }
         }
     }

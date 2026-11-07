@@ -17,27 +17,10 @@ using Xunit;
 
 namespace com.RedPand.MCP.Plugin.Server.Tests
 {
-    /// <summary>Parsing of the new OAuth resource-server args/env (mcp-authorize b2).</summary>
+    /// <summary>Parsing of the auth args/env.</summary>
     [Collection("McpPlugin.Server")]
     public class DataArgumentsAuthTests
     {
-        [Fact]
-        public void AuthOAuth_Args_Parsed()
-        {
-            var args = new DataArguments(new[]
-            {
-                "auth=oauth",
-                "auth-issuer=https://ai-game.dev",
-                "public-url=http://localhost:23471",
-                "bind=any"
-            });
-
-            args.Authorization.ShouldBe(Consts.MCP.Server.AuthOption.oauth);
-            args.AuthIssuer.ShouldBe("https://ai-game.dev");
-            args.PublicUrl.ShouldBe("http://localhost:23471");
-            args.Bind.ShouldBe("any");
-        }
-
         [Fact]
         public void LegacyAuthorizationRequired_StillParsed()
         {
@@ -56,8 +39,8 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         public void NewAuthArg_OverridesLegacyAuthorizationArg()
         {
             // Both supplied: the target-state --auth wins over legacy --authorization.
-            var args = new DataArguments(new[] { "authorization=required", "auth=oauth" });
-            args.Authorization.ShouldBe(Consts.MCP.Server.AuthOption.oauth);
+            var args = new DataArguments(new[] { "authorization=required", "auth=token" });
+            args.Authorization.ShouldBe(Consts.MCP.Server.AuthOption.token);
         }
 
         [Fact]
@@ -72,22 +55,19 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         {
             try
             {
-                Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.Auth, "oauth");
-                Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.AuthIssuer, "https://as.example");
+                Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.Auth, "token");
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.PublicUrl, "http://localhost:5555");
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.Bind, "any");
 
                 var args = new DataArguments(Array.Empty<string>());
 
-                args.Authorization.ShouldBe(Consts.MCP.Server.AuthOption.oauth);
-                args.AuthIssuer.ShouldBe("https://as.example");
+                args.Authorization.ShouldBe(Consts.MCP.Server.AuthOption.token);
                 args.PublicUrl.ShouldBe("http://localhost:5555");
                 args.Bind.ShouldBe("any");
             }
             finally
             {
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.Auth, null);
-                Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.AuthIssuer, null);
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.PublicUrl, null);
                 Environment.SetEnvironmentVariable(Consts.MCP.Server.Env.Bind, null);
             }

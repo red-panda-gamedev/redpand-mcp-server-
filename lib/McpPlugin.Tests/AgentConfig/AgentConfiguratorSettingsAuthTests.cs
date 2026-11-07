@@ -47,13 +47,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
             Settings(mode).IsHttpAuthRequired.ShouldBe(expected);
         }
 
-        [Fact]
-        public void IsHttpAuthRequired_Cloud_AlwaysTrue()
-        {
-            // Cloud enforces auth regardless of the local auth option (even none).
-            Settings(Consts.MCP.Server.AuthOption.none, ConnectionMode.Cloud).IsHttpAuthRequired.ShouldBeTrue();
-        }
-
         [Theory]
         [InlineData(Consts.MCP.Server.AuthOption.required, true)]
         [InlineData(Consts.MCP.Server.AuthOption.token, false)] // token mode is HTTP-only; stdio credential-free

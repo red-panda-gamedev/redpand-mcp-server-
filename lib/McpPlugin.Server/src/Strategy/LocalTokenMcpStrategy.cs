@@ -80,7 +80,6 @@ namespace com.RedPand.MCP.Plugin.Server.Strategy
         {
             // Offline token mode: the handler validates the presented bearer against this static secret
             // with a constant-time compare. Not the OAuth (JWKS/introspection) path.
-            options.OAuthMode = false;
             options.LocalTokenMode = true;
             options.LocalToken = dataArguments.Token;
             _serverToken = dataArguments.Token;

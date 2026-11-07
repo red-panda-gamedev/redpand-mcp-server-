@@ -18,7 +18,6 @@ using com.RedPand.MCP.Plugin.Common.Hub.Server;
 using com.RedPand.MCP.Plugin.Common.Model;
 using com.RedPand.MCP.Plugin.Common.Utils;
 using com.RedPand.MCP.Plugin.Server.Auth;
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
 using com.RedPand.MCP.Plugin.Server.Strategy;
 using com.RedPand.MCP.Plugin.Server.Tools;
 using com.RedPand.MCP.Plugin.Server.Webhooks;
@@ -38,7 +37,6 @@ namespace com.RedPand.MCP.Plugin.Server
         readonly IRequestTrackingService _requestTrackingService;
         readonly IMcpSessionTracker _sessionTracker;
         readonly IWebhookEventCollector _webhookCollector;
-        readonly IOAuthTokenValidator? _oauthValidator;
 
         public McpServerHub(
             ILogger<McpServerHub> logger,
@@ -51,8 +49,7 @@ namespace com.RedPand.MCP.Plugin.Server
             IMcpSessionTracker sessionTracker,
             IMcpConnectionStrategy strategy,
             IWebhookEventCollector webhookCollector,
-            IAuthorizationWebhookService authorizationWebhookService,
-            IOAuthTokenValidator? oauthValidator = null)
+            IAuthorizationWebhookService authorizationWebhookService)
             : base(logger, strategy, authorizationWebhookService)
         {
             _version = version ?? throw new ArgumentNullException(nameof(version));
@@ -63,19 +60,11 @@ namespace com.RedPand.MCP.Plugin.Server
             _requestTrackingService = requestTrackingService ?? throw new ArgumentNullException(nameof(requestTrackingService));
             _sessionTracker = sessionTracker ?? throw new ArgumentNullException(nameof(sessionTracker));
             _webhookCollector = webhookCollector ?? throw new ArgumentNullException(nameof(webhookCollector));
-            _oauthValidator = oauthValidator;
         }
 
         public override async Task OnConnectedAsync()
         {
             await base.OnConnectedAsync();
-            if (_connectionRejected)
-                return;
-
-            // mcp-authorize b3: in oauth mode a plugin connection is validated (its `sub` is the
-            // account) and its instance metadata registered into the account+instance pairing plane
-            // BEFORE we compute the account-scoped initial client data below.
-            await TryRegisterOAuthInstanceAsync();
             if (_connectionRejected)
                 return;
 
@@ -91,72 +80,6 @@ namespace com.RedPand.MCP.Plugin.Server
             _logger.LogDebug("{method}. {guid}. Sending initial client data. Count: {count}",
                 nameof(OnConnectedAsync), _guid, allActiveClients.Length);
             await Clients.Caller.OnInitialClientData(allActiveClients);
-        }
-
-        /// <summary>
-        /// Registers this plugin connection into the <see cref="AccountMcpStrategy"/> registry when in
-        /// oauth mode (mcp-authorize b3). The account is taken from the VALIDATED plugin token (its
-        /// <c>sub</c>) — never from unauthenticated input — so an instance can never be registered
-        /// under a spoofed account. Instance metadata is read from the hub-connection query (the b7
-        /// wire format); when absent, a synthetic single-instance registration keeps the common case
-        /// routable. A token that fails validation is left unregistered (unroutable), not trusted.
-        /// </summary>
-        async Task TryRegisterOAuthInstanceAsync()
-        {
-            if (_strategy.AuthOption != Consts.MCP.Server.AuthOption.oauth)
-                return;
-            if (_strategy is not AccountMcpStrategy account)
-                return;
-
-            var httpContext = Context.GetHttpContext();
-            var token = ExtractBearer(httpContext?.Request.Headers["Authorization"].FirstOrDefault());
-            if (string.IsNullOrEmpty(token) || _oauthValidator == null)
-            {
-                _logger.LogWarning("{guid} oauth plugin connection without a validatable token — not registered (unroutable). ConnectionId: {connectionId}.",
-                    _guid, Context.ConnectionId);
-                return;
-            }
-
-            OAuthValidationResult validation;
-            try
-            {
-                // Plugin-plane validation (auth-fixes B11): the plugin hub-token carries
-                // aud=urn:agd:hub, which the strict agent-plane aud check rejects. The plugin plane
-                // allow-lists that audience while keeping the agent plane strict on the RS resource, so
-                // an unregistered-bucket → silent "3 tools" degrade no longer happens. Plane separation
-                // is enforced in the validator: an agent token can never register as a plugin instance.
-                validation = await _oauthValidator.ValidateAsync(token!, TokenValidationPlane.Plugin, Context.ConnectionAborted);
-            }
-            catch (Exception ex)
-            {
-                // Any failed validation attempt is unavailable evidence, not a definitive denial.
-                // Close the unregistered hub so it cannot remain silently unroutable after recovery.
-                _logger.LogWarning(ex, "{guid} oauth plugin validation unavailable; closing for retry. ConnectionId: {connectionId}.", _guid, Context.ConnectionId);
-                _strategy.OnPluginDisconnected(GetType(), Context.ConnectionId, _logger);
-                _connectionRejected = true;
-                Context.Abort();
-                return;
-            }
-
-            var identity = validation.Succeeded ? ConnectionIdentity.Create(validation.Subject, validation.Scope, validation.ClientId) : null;
-            if (identity == null)
-            {
-                _logger.LogWarning("{guid} oauth plugin token rejected ({reason}) — not registered (unroutable). ConnectionId: {connectionId}.",
-                    _guid, validation.FailureReason ?? "no subject", Context.ConnectionId);
-                return;
-            }
-
-            var query = httpContext?.Request.Query;
-            var metadata = AccountMcpStrategy.BuildInstanceMetadata(
-                connectionId: Context.ConnectionId,
-                instanceId: QueryValue(query, Consts.MCP.Server.HubQuery.InstanceId),
-                engine: QueryValue(query, Consts.MCP.Server.HubQuery.Engine),
-                projectName: QueryValue(query, Consts.MCP.Server.HubQuery.ProjectName),
-                projectPathHash: QueryValue(query, Consts.MCP.Server.HubQuery.ProjectPathHash),
-                machineName: QueryValue(query, Consts.MCP.Server.HubQuery.MachineName),
-                projectPathHashLegacy: QueryValue(query, Consts.MCP.Server.HubQuery.ProjectPathHashLegacy));
-
-            account.RegisterInstance(identity, metadata, Context.ConnectionId, _logger);
         }
 
         /// <summary>
@@ -196,22 +119,6 @@ namespace com.RedPand.MCP.Plugin.Server
                 // Never fail a handshake over role bookkeeping.
                 _logger.LogWarning(ex, "{guid} Could not classify plugin connection '{connectionId}'.", _guid, Context.ConnectionId);
             }
-        }
-
-        static string? QueryValue(Microsoft.AspNetCore.Http.IQueryCollection? query, string key)
-        {
-            if (query == null || !query.TryGetValue(key, out var value))
-                return null;
-            var s = value.ToString();
-            return string.IsNullOrEmpty(s) ? null : s;
-        }
-
-        static string? ExtractBearer(string? authHeader)
-        {
-            if (string.IsNullOrEmpty(authHeader) || !authHeader!.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-                return null;
-            var token = authHeader.Substring("Bearer ".Length).Trim();
-            return token.Length > 0 ? token : null;
         }
 
         public override Task OnDisconnectedAsync(Exception? exception)

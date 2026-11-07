@@ -136,7 +136,7 @@ namespace com.RedPand.MCP.Plugin.Server.Api
             var toolHub = context.RequestServices.GetRequiredService<IClientToolHub>();
             var request = new RequestListTool();
             var response = await toolHub.RunListTool(request, context.RequestAborted);
-            var nativeTools = context.RequestServices.GetService<ServerNativeTools>()?.Descriptors;
+            var nativeTools = (IReadOnlyList<ModelContextProtocol.Protocol.Tool>?)null; // RedPand: the account plane's native tools went with the cloud
 
             if (response == null && nativeTools == null)
             {

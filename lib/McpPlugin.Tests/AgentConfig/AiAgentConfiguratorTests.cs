@@ -210,16 +210,6 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
         }
 
         [Fact]
-        public void CloudMode_ForcesHttpAuthRequired()
-        {
-            var settings = new AgentConfiguratorSettings(
-                OperatingSystemKind.Linux, "/proj", "/bin/srv", 50000, 30000,
-                "https://cloud.ai-game.dev/mcp", token: "tok",
-                connectionMode: ConnectionMode.Cloud);
-            settings.IsHttpAuthRequired.ShouldBeTrue();
-        }
-
-        [Fact]
         public void AllConfigurators_DescribeWithoutThrowing_BothTransports()
         {
             var settings = Settings(Path.GetTempPath());

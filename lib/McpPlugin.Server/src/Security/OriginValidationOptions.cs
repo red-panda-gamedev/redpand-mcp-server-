@@ -13,7 +13,7 @@ using System;
 using System.Collections.Generic;
 using com.RedPand.MCP.Plugin.Common;
 using com.RedPand.MCP.Plugin.Common.Utils;
-using com.RedPand.MCP.Plugin.Server.Auth.OAuth;
+using com.RedPand.MCP.Plugin.Server.Security;
 
 namespace com.RedPand.MCP.Plugin.Server.Security
 {

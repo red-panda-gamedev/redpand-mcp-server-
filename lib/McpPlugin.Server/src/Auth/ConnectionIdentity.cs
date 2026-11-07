@@ -60,7 +60,7 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
         public DateTimeOffset? Exp { get; }
 
         /// <summary>
-        /// The project pin a project key (<c>agd_pk_…</c>) is bound to (project-keys contract §5), or null for an
+        /// The project pin a project key was bound to (removed with the hosted cloud; always null now), or null for an
         /// account-wide credential. Every account-scoped reader (instance listing / selection / enrollment) narrows
         /// to this pin, so a project key never sees or reaches another project of the same account.
         /// </summary>
@@ -122,8 +122,7 @@ namespace com.RedPand.MCP.Plugin.Server.Auth
             var scope = principal.FindFirst(TokenAuthenticationHandler.ScopeClaimType)?.Value;
             var clientId = principal.FindFirst(TokenAuthenticationHandler.ClientIdClaimType)?.Value;
             var identity = Create(sub, scope, clientId);
-            var boundPin = principal.FindFirst(TokenAuthenticationHandler.ProjectPinClaimType)?.Value;
-            return identity == null || string.IsNullOrEmpty(boundPin) ? identity : identity with { BoundProjectPin = boundPin };
+            return identity;
         }
     }
 }

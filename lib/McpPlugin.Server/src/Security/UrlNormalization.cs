@@ -12,7 +12,7 @@
 using System;
 using System.Net;
 
-namespace com.RedPand.MCP.Plugin.Server.Auth.OAuth
+namespace com.RedPand.MCP.Plugin.Server.Security
 {
     /// <summary>
     /// URL normalization helpers shared by strict-<c>aud</c> validation and Origin validation
