@@ -51,7 +51,7 @@ namespace com.RedPand.MCP.Server.Tests
 
             Assert.Equal(Dsn, options.Dsn);
             Assert.Equal("production", options.Environment);
-            Assert.StartsWith("gamedev-mcp-server@", options.Release);
+            Assert.StartsWith("redpand-mcp-server@", options.Release);
             Assert.False(options.SendDefaultPii);
             Assert.Equal(RequestSize.None, options.MaxRequestBodySize);
             Assert.Equal(LogLevel.Critical, options.MinimumEventLevel);

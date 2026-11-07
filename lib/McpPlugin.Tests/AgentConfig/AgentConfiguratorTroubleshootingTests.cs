@@ -151,7 +151,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                 .Select(i => i.Text)
                 .ToList();
 
-            var container = $"gamedev-mcp-server-{settings.Port}";
+            var container = $"redpand-mcp-server-{settings.Port}";
             values.ShouldContain(v => v.StartsWith("docker run -d") && v.Contains(container) && v.Contains("ghcr.io/red-panda-gamedev/redpand-mcp-server:8.0.0"));
             values.ShouldContain($"docker start {container}");
             values.ShouldContain($"docker stop {container}");

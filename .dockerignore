@@ -5,15 +5,17 @@
 .git
 
 # dotnet build
-bin
-obj
+**/bin
+**/obj
 
 # dotnet publish
 publish
 nupkg
 
-# test project (never shipped in the runtime image)
+# test projects (never shipped in the runtime image)
 tests
+lib/*.Tests
+lib/tests
 
 # documentation
 *.md

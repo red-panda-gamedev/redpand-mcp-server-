@@ -1,14 +1,13 @@
 # AGENTS.md
 
-Engine-agnostic C# ASP.NET Core MCP server shared by the Unity-MCP, Godot-MCP and Unreal-MCP engine
-plugins. Thin host (`src/Program.cs`) over the NuGet packages `com.IvanMurzak.McpPlugin.Server` +
-`com.IvanMurzak.ReflectorNet` — ALL real server logic lives in those packages; this repo contains no
-engine-specific code. Distributed as standalone executables (`gamedev-mcp-server-<rid>.zip`), a
-Docker image (`aigamedeveloper/mcp-server`), and a global dotnet tool on NuGet
-(`com.RedPand.MCP.Server`, command `gamedev-mcp-server`).
+The RedPand MCP server: a C# ASP.NET Core MCP server for the RedPand MCP Unity plugin
+(https://github.com/red-panda-gamedev/RedPand-MCP, private). A thin host (`src/Program.cs`) over the plugin
+library in `lib/` (built from source here) and the NuGet package `com.IvanMurzak.ReflectorNet`. Distributed as
+standalone executables (`redpand-mcp-server-<rid>.zip` on GitHub Releases) and a Docker image
+(`ghcr.io/red-panda-gamedev/redpand-mcp-server`). No NuGet tool.
 
-**NOT AI-Game-Dev-Server (the ai-game.dev cloud LLM/billing proxy) — this is the local MCP
-stdio/http proxy host shared by the engine plugins.**
+This repository is public and Apache-2.0 only. Keep the original author's copyright headers, `LICENSE`,
+`NOTICE` and `lib/NOTICE`. Never push to `IvanMurzak/*` (the `upstream` remote has push disabled).
 
 ## Build / run
 
@@ -18,47 +17,29 @@ dotnet run --project com.RedPand.MCP.Server.csproj -- --client-transport stdio -
 ```
 
 - All-platform self-contained publish: `python build/build_all.py [Debug|Release] [rid ...]` (stdlib
-  Python 3.9+, any OS; `--no-zip`, then `--zip-only` after code-signing). It anchors `publish/` to the
-  repo root, so any cwd works. No PowerShell in this repo: workflow steps call Python.
-- Local dev against sibling MCP-Plugin-dotnet/ReflectorNet checkouts: `dotnet build -p:UseLocalMcpPlugin=true`.
+  Python 3.9+, any OS; `--no-zip`, then `--zip-only` to zip after an external signing step).
+- Tests: `dotnet test tests/GameDev.MCP.Server.Tests/GameDev.MCP.Server.Tests.csproj`,
+  `dotnet test lib/McpPlugin.Tests/McpPlugin.Tests.csproj`, `dotnet test lib/McpPlugin.Server.Tests/McpPlugin.Server.Tests.csproj`,
+  `python -m unittest discover -s scripts/tests` (set `PYTHONUTF8=1` on Windows).
 
 ## Layout
 
-- `src/` — the host: `Program.cs`, startup/auth defaults (`Startup/`), the `configure` command
-  (`Configure/`), logging adapters (`Utils/`). New host code goes here, not engine or server logic.
-- `tests/GameDev.MCP.Server.Tests/` — xUnit tests (excluded from the main csproj build and pack).
-- `build/` — the cross-platform publish script (`build_all.py`) and the macOS entitlements.
-- `scripts/` — the release dependency guard + its offline unit tests (`scripts/tests/`, run by PR CI).
-- `docs/NUGET.md` — the NuGet readme; `docs/img/` — README images.
-- `.github/workflows/` — PR tests and the dispatch-only release with its `deploy_*` children.
-- Root: the csproj, `server.json` (package half of the one registry listing `io.github.IvanMurzak/Unity-MCP`; the listing is published from the Unity-MCP repo, never from here), `Dockerfile`, `appsettings.json`, `NLog.config`.
+- `src/` — the host: `Program.cs`, startup/auth defaults (`Startup/`), the `configure` command (`Configure/`).
+- `lib/` — the plugin library (`com.RedPand.MCP.Plugin*`): McpPlugin, .Common, .Server and their tests.
+  The Unity plugin ships DLLs built from it (`commands/plugin_library.py` in the plugin repo).
+- `tests/GameDev.MCP.Server.Tests/` — xUnit tests of the host (incl. `NoHostedCloudTests`: no `ai-game.dev`).
+- `build/` — `build_all.py` and the macOS entitlements.
+- `scripts/` — the release dependency guard and its offline unit tests (`scripts/tests/`).
+- `.github/workflows/` — `test_pull_request.yml` (PR gate) and the tag-triggered `release.yml` with its children.
+- Root: the csproj, `server.json` (MCP registry listing `io.github.red-panda-gamedev/redpand-mcp`), `Dockerfile`.
 
 ## Versioning / releases
 
-- `<Version>` in the csproj + `server.json` move together. Keep the McpPlugin.Server / ReflectorNet
-  pins in lockstep with the engine plugins (Compatibility table in README.md).
-- Between test waves McpPlugin is integrated unreleased: `<version>-dev.<sha>` packages committed under
-  `prerelease-packages/`, fed to every restore by `Directory.Build.props` (and copied by the Dockerfile).
-  Before a release, pin published versions, delete both, and drop their Dockerfile COPY lines and the
-  `.gitignore` exception: `release.yml` FAILS first (dry runs too) while any pin is a pre-release or
-  not on nuget.org, or a local feed is wired in (`scripts/release_dependency_guard.py`).
-- **NuGet readme is `docs/NUGET.md`, NOT the root README** (whose GitHub HTML NuGet's sanitizer
-  mangles); the csproj packs it as `README.md`. Keep its versions/compatibility table in sync with the
-  root README on each release. A readme fix shows on nuget.org only after a **new version** is published.
-- **Release = manual dispatch of `.github/workflows/release.yml` ONLY**
-  (`gh workflow run release.yml -R IvanMurzak/GameDev-MCP-Server --ref main -f dry_run=false`).
-  Merging a version bump publishes nothing; nothing listens for GitHub `release` events. Order: guard
-  (dependency guard first; real run on `main` only; fails if tag `v<version>` exists) -> full tests (`test_pull_request.yml`
-  via `workflow_call`) -> executables + NuGet + Docker Hub -> tag `v<version>` + GitHub Release
-  (7 zips + `SHA256SUMS`) -> post-publish verification (NuGet index, Docker Hub tag, release assets).
-  `dry_run=true` runs every test and build and publishes nothing (once the dependency guard passes).
-- `workflow_call` children of `release.yml`:
-  - `deploy_server_executables.yml` builds, code-signs (Azure Trusted Signing on Windows,
-    codesign+notarytool on macOS — degrading gracefully without secrets) and zips the 7 RIDs as 1-day
-    artifacts; `release.yml` computes `SHA256SUMS` and attaches everything to the Release.
-  - `deploy_docker.yml` pushes `aigamedeveloper/mcp-server:<version>` + `:latest`
-    (secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`).
-  - `deploy_nuget.yml` packs the global tool and pushes it to NuGet via Trusted Publishing (OIDC,
-    `NuGet/login@v1` as `IvanMurzak`, no stored API key). The login runs inside this reusable
-    workflow, so the NuGet.org policy bound to `IvanMurzak/GameDev-MCP-Server` must accept that
-    invocation (ReflectorNet already publishes the same way from a `deploy.yml` called by `release.yml`).
+- `<Version>` in the csproj, `server.json`'s `version` and its OCI identifier tag move together.
+- The Unity plugin pins the server by the `ServerVersion` constant in its `McpServerManager.cs`; a release
+  with all 7 zips must exist before a plugin release pins it.
+- **Release = push tag `v<version>`.** `release.yml`: guard (dependency guard; tag == `v<csproj Version>`;
+  the GitHub Release must not exist) -> full tests (`test_pull_request.yml`) -> executables (unsigned unless
+  the optional macOS signing secrets are set) + Docker image to GHCR (`GITHUB_TOKEN`) -> GitHub Release
+  (7 zips + `SHA256SUMS`) -> verify. A manual dispatch is a dry run that publishes nothing.
+- A new GHCR package starts private: make it public once in the org's package settings.

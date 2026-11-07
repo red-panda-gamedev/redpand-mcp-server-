@@ -24,7 +24,7 @@ def _fake_publish(fail_rids=()):
         calls.append(cmd)
         rid, out = cmd[cmd.index("-r") + 1], Path(cmd[cmd.index("-o") + 1])
         out.mkdir(parents=True, exist_ok=True)
-        exe = out / ("gamedev-mcp-server.exe" if rid.startswith("win-") else "gamedev-mcp-server")
+        exe = out / ("redpand-mcp-server.exe" if rid.startswith("win-") else "redpand-mcp-server")
         exe.write_bytes(b"binary")
         exe.chmod(0o755)
         (out / "appsettings.json").write_text("{}")
@@ -54,7 +54,7 @@ class BuildAllTests(unittest.TestCase):
         return code, calls, out.getvalue()
 
     def entries(self, rid):
-        with zipfile.ZipFile(self.root / "publish" / ("gamedev-mcp-server-%s.zip" % rid)) as zf:
+        with zipfile.ZipFile(self.root / "publish" / ("redpand-mcp-server-%s.zip" % rid)) as zf:
             return {i.filename: i.external_attr >> 16 for i in zf.infolist()}
 
     def test_defaults_build_all_seven_runtimes_in_release(self):
@@ -100,12 +100,12 @@ class BuildAllTests(unittest.TestCase):
     def test_zip_layouts_flat_for_windows_rid_folder_with_exec_bit_otherwise(self):
         code, _, _ = self.main("win-x64", "linux-x64")
         self.assertEqual(code, 0)
-        self.assertEqual(set(self.entries("win-x64")), {"gamedev-mcp-server.exe", "appsettings.json"})
+        self.assertEqual(set(self.entries("win-x64")), {"redpand-mcp-server.exe", "appsettings.json"})
         linux = self.entries("linux-x64")
-        self.assertEqual(set(linux), {"linux-x64/", "linux-x64/gamedev-mcp-server", "linux-x64/appsettings.json"})
+        self.assertEqual(set(linux), {"linux-x64/", "linux-x64/redpand-mcp-server", "linux-x64/appsettings.json"})
         self.assertTrue(stat.S_ISDIR(linux["linux-x64/"]))
         if os.name != "nt":  # Windows has no exec bit to keep
-            self.assertTrue(linux["linux-x64/gamedev-mcp-server"] & stat.S_IXUSR)
+            self.assertTrue(linux["linux-x64/redpand-mcp-server"] & stat.S_IXUSR)
 
     def test_build_failure_exits_1_and_skips_zips(self):
         code, calls, out = self.main("linux-x64", "osx-x64", fail_rids=("linux-x64",))
@@ -124,12 +124,12 @@ class BuildAllTests(unittest.TestCase):
     def test_zip_only_zips_existing_outputs_without_building(self):
         rid_dir = self.root / "publish" / "osx-arm64"
         rid_dir.mkdir(parents=True)
-        (rid_dir / "gamedev-mcp-server").write_bytes(b"signed")
-        (self.root / "publish" / "gamedev-mcp-server-osx-arm64.zip").write_bytes(b"stale")
+        (rid_dir / "redpand-mcp-server").write_bytes(b"signed")
+        (self.root / "publish" / "redpand-mcp-server-osx-arm64.zip").write_bytes(b"stale")
         code, calls, _ = self.main("--zip-only", "osx-arm64")
         self.assertEqual(code, 0)
         self.assertEqual(calls, [])
-        self.assertEqual(set(self.entries("osx-arm64")), {"osx-arm64/", "osx-arm64/gamedev-mcp-server"})
+        self.assertEqual(set(self.entries("osx-arm64")), {"osx-arm64/", "osx-arm64/redpand-mcp-server"})
 
     def test_zip_only_missing_folder_exits_1(self):
         (self.root / "publish").mkdir()

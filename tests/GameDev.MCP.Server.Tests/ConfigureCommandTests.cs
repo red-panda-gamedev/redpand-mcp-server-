@@ -26,7 +26,7 @@ namespace com.RedPand.MCP.Server.Tests
     /// </summary>
     public class ConfigureCommandTests
     {
-        private const string FakeExe = "/opt/gamedev-mcp-server/gamedev-mcp-server";
+        private const string FakeExe = "/opt/redpand-mcp-server/redpand-mcp-server";
         private const string FakeVersion = "9.0.0";
 
         [Fact]

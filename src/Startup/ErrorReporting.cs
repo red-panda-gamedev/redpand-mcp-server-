@@ -63,7 +63,7 @@ namespace com.RedPand.MCP.Server.Startup
             options.Dsn = dsn.Trim();
             if (!string.IsNullOrWhiteSpace(environment))
                 options.Environment = environment.Trim();
-            options.Release = "gamedev-mcp-server@" + ServerVersion.Resolve();
+            options.Release = "redpand-mcp-server@" + ServerVersion.Resolve();
             options.SendDefaultPii = false;
             options.MaxRequestBodySize = RequestSize.None;
             options.TracesSampleRate = 0;

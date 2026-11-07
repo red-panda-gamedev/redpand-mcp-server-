@@ -1,36 +1,18 @@
-# ┌───────────────────────────────────────────────────────────────────────────┐
-# │  Author: Ivan Murzak (https://github.com/IvanMurzak)                      │
-# │  Repository: GitHub (https://github.com/IvanMurzak/GameDev-MCP-Server)    │
-# │  Copyright (c) 2026 Ivan Murzak                                           │
-# │  Licensed under the Apache License, Version 2.0.                          │
-# │  See the LICENSE file in the project root for more information.           │
-# └───────────────────────────────────────────────────────────────────────────┘
+# RedPand MCP server. Licensed under the Apache License, Version 2.0.
+# Based on the GameDev-MCP-Server workflows, Copyright (c) 2026 Ivan Murzak (Apache-2.0).
 
-# This workflow builds the MCP server executables for all platforms, code-signs
-# them, zips them, and hands the 7 zips to release.yml as workflow ARTIFACTS.
-# Reusable CHILD of release.yml ONLY (workflow_call): it has no release /
-# dispatch trigger of its own and it never touches a GitHub Release. release.yml
-# creates the tag + GitHub Release AFTER NuGet and Docker Hub are published and
-# attaches these zips plus a SHA256SUMS manifest it computes from them.
+# Builds the server executables for all 7 platforms, zips them, and hands the zips to release.yml
+# as workflow artifacts. A reusable child of release.yml only.
 #
-# Code-signing is GRACEFULLY DEGRADING: every signing/notarization step is
-# guarded on its secret being non-empty. A run with NO signing secrets set
-# still builds and zips ALL 7 unsigned zips so releases stay green before the
-# secrets are provisioned.
+# macOS code-signing and notarization are optional: every signing step is guarded on its secret
+# (MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD, MAC_SIGN_IDENTITY, APPLE_API_KEY_B64/_ID/ISSUER). Without
+# them the executables ship unsigned (the .NET SDK still ad-hoc signs the osx apphost on macOS,
+# which Apple Silicon requires, so the osx RIDs build on macos-latest).
 #
-# Platform split:
-#   - macos-latest job  -> osx-x64, osx-arm64 (codesign + notarytool),
-#                          plus linux-x64, linux-arm64 (unsigned, cross-built).
-#   - windows-latest job -> win-x64, win-x86, win-arm64 (Azure Trusted Signing).
-# signtool cannot run on macOS, so the Windows RIDs need their own runner.
+#   - macos-latest job   -> osx-x64, osx-arm64, plus linux-x64, linux-arm64 (cross-built)
+#   - windows-latest job -> win-x64, win-x86, win-arm64 (unsigned)
 #
-# dry_run: every build / sign / zip step still runs (so a dry run proves the
-# signing secrets and the build recipe), but the zips are NOT uploaded as
-# artifacts — nothing consumes them on a dry run.
-#
-# (The former manual `workflow_dispatch` SHA256SUMS backfill onto an existing
-# release is gone with the dispatch trigger; release.yml now always attaches
-# SHA256SUMS in the same step that creates the release.)
+# dry_run: everything is built and zipped, but the zips are not uploaded as artifacts.
 
 name: deploy-server-executables
 
@@ -38,7 +20,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: "Release version (e.g., 8.0.1), no 'v' prefix. Informational."
+        description: "Release version (e.g., 1.0.0), no 'v' prefix. Informational."
         required: true
         type: string
       dry_run:
@@ -121,7 +103,7 @@ jobs:
           set -euo pipefail
           ENTITLEMENTS="build/entitlements.mac.plist"
           for rid in osx-x64 osx-arm64; do
-            BIN="publish/${rid}/gamedev-mcp-server"
+            BIN="publish/${rid}/redpand-mcp-server"
             echo "Signing ${BIN}..."
             codesign --force --options runtime --timestamp \
               --entitlements "$ENTITLEMENTS" \
@@ -147,7 +129,7 @@ jobs:
           echo "$APPLE_API_KEY_B64" | base64 --decode > "$KEY_PATH"
 
           for rid in osx-x64 osx-arm64; do
-            ZIP="publish/gamedev-mcp-server-${rid}.zip"
+            ZIP="publish/redpand-mcp-server-${rid}.zip"
             echo "Notarizing ${ZIP}..."
             # `notarytool submit --wait` exits 0 even when the submission is
             # Invalid/Rejected (it only fails on transport errors), so the exit
@@ -179,20 +161,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ────────────────────────────────────────────────────────────────────
-  # Windows: win-x64, win-x86, win-arm64. Signed with Azure Trusted Signing
-  # (signtool is Windows-only). Built on windows-latest via build/build_all.py.
-  # ────────────────────────────────────────────────────────────────────
+  # Windows: win-x64, win-x86, win-arm64 (unsigned).
   build-windows:
     runs-on: windows-latest
     timeout-minutes: 60
-    # Job-level env so the Azure Trusted Signing guard (`if: env.AZURE_CLIENT_ID
-    # != ''`) can read it — a step's own `env:` is not visible to that step's
-    # own `if:`. See the macOS job's env comment for the full rationale.
-    env:
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -203,29 +175,8 @@ jobs:
           dotnet-version: "9.0.x"
 
       # `python`, not `python3`: the hosted Windows image ships python.exe only.
-      - name: Build executables (win, no zip yet)
-        run: python build/build_all.py Release --no-zip win-x64 win-x86 win-arm64
-
-      # Sign every .exe under the publish dir via Azure Trusted Signing.
-      # Guarded: the step is skipped when AZURE_CLIENT_ID is empty, leaving the
-      # executables unsigned but still uploadable.
-      - name: Sign Windows executables (Azure Trusted Signing)
-        if: ${{ env.AZURE_CLIENT_ID != '' }}
-        uses: azure/trusted-signing-action@v0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://eus.codesigning.azure.net
-          trusted-signing-account-name: ivan-murzak
-          certificate-profile-name: ai-game-dev-cert
-          files-folder: ${{ github.workspace }}/publish
-          files-folder-filter: exe
-          files-folder-recurse: true
-
-      # Flat zips: the files at the zip root (build/build_all.py docstring).
-      - name: Zip executables
-        run: python build/build_all.py --zip-only win-x64 win-x86 win-arm64
+      - name: Build executables (win)
+        run: python build/build_all.py Release win-x64 win-x86 win-arm64
 
       - name: Upload zips as artifact (win)
         if: ${{ !inputs.dry_run }}

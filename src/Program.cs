@@ -35,7 +35,7 @@ namespace com.RedPand.MCP.Server
     {
         public static async Task<int> Main(string[] args)
         {
-            // Subcommand dispatch: `gamedev-mcp-server configure --agent <id> [--url ...]` writes an MCP
+            // Subcommand dispatch: `redpand-mcp-server configure --agent <id> [--url ...]` writes an MCP
             // client config from the terminal using the shared configurator registry, then exits WITHOUT
             // starting the server. Handled first so it never boots Kestrel / NLog server logging.
             if (ConfigureCommand.IsInvocation(args))

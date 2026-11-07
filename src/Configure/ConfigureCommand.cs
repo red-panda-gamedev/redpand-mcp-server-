@@ -19,7 +19,7 @@ using com.RedPand.MCP.Plugin.Common.Utils; // ArgsUtils
 namespace com.RedPand.MCP.Server.Configure
 {
     /// <summary>
-    /// Terminal subcommand: <c>gamedev-mcp-server configure --agent &lt;id&gt; [--url &lt;url&gt;]
+    /// Terminal subcommand: <c>redpand-mcp-server configure --agent &lt;id&gt; [--url &lt;url&gt;]
     /// [--transport stdio|http] [--project &lt;path&gt;]</c>.
     /// <para>
     /// Exposes the shared AI-agent configurator registry
@@ -38,11 +38,11 @@ namespace com.RedPand.MCP.Server.Configure
         public const string CommandName = "configure";
 
         private const string DefaultLocalHost = "http://localhost";
-        private const string ServerExecutableName = "gamedev-mcp-server";
+        private const string ServerExecutableName = "redpand-mcp-server";
         private const string DockerImage = "ghcr.io/red-panda-gamedev/redpand-mcp-server";
         private const int DefaultPluginTimeoutMs = 10000;
 
-        /// <summary>True when the process was launched as <c>gamedev-mcp-server configure …</c>.</summary>
+        /// <summary>True when the process was launched as <c>redpand-mcp-server configure …</c>.</summary>
         public static bool IsInvocation(string[]? args)
             => args is { Length: > 0 }
                && string.Equals(args[0], CommandName, StringComparison.OrdinalIgnoreCase);
@@ -233,7 +233,7 @@ namespace com.RedPand.MCP.Server.Configure
 
         private static void PrintUsage()
         {
-            Console.WriteLine("Usage: gamedev-mcp-server configure --agent <id> [--url <url>] [--transport stdio|http] [--project <path>]");
+            Console.WriteLine("Usage: redpand-mcp-server configure --agent <id> [--url <url>] [--transport stdio|http] [--project <path>]");
             Console.WriteLine();
             Console.WriteLine("Writes a project-scoped, pinned MCP client config for the chosen AI agent.");
             Console.WriteLine("Credentials are never written into the config (URL-only; native authorize).");

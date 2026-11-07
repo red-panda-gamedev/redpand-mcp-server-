@@ -7,6 +7,10 @@ WORKDIR /src
 
 # Copy main project file
 COPY ["com.RedPand.MCP.Server.csproj", "."]
+COPY ["lib/Directory.Build.props", "lib/"]
+COPY ["lib/McpPlugin/McpPlugin.csproj", "lib/McpPlugin/"]
+COPY ["lib/McpPlugin.Common/McpPlugin.Common.csproj", "lib/McpPlugin.Common/"]
+COPY ["lib/McpPlugin.Server/McpPlugin.Server.csproj", "lib/McpPlugin.Server/"]
 
 # Restore dependencies
 RUN dotnet restore "com.RedPand.MCP.Server.csproj"
@@ -32,10 +36,12 @@ WORKDIR /app
 COPY --from=build --chown=1654:1654 /app/publish .
 
 # MCP server metadata
-LABEL io.modelcontextprotocol.server.name="io.github.IvanMurzak/Unity-MCP"
+LABEL io.modelcontextprotocol.server.name="io.github.red-panda-gamedev/redpand-mcp"
+LABEL org.opencontainers.image.source="https://github.com/red-panda-gamedev/redpand-mcp-server-"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Expose the default plugin port and the HTTP client port so external scanners
 # (like Smithery) and platform port mappings can reach the server.
 EXPOSE 8080
 
-ENTRYPOINT ["dotnet", "gamedev-mcp-server.dll"]
+ENTRYPOINT ["dotnet", "redpand-mcp-server.dll"]

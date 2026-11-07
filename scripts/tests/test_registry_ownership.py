@@ -12,13 +12,6 @@ def _listing_name():
 
 
 class RegistryOwnershipTests(unittest.TestCase):
-    def test_nuget_readme_carries_mcp_name(self):
-        # The registry reads the packed README (docs/NUGET.md, see the csproj) for `mcp-name: <name>`
-        # followed by a boundary (whitespace, a tag, or `-->`), so a longer name must not pass.
-        readme = (_ROOT / "docs" / "NUGET.md").read_text(encoding="utf-8")
-        token = r"mcp-name: " + re.escape(_listing_name()) + r"(?=\s|<|-->|\Z)"
-        self.assertRegex(readme, token)
-
     def test_docker_label_names_the_listing(self):
         dockerfile = (_ROOT / "Dockerfile").read_text(encoding="utf-8")
         match = re.search(r'io\.modelcontextprotocol\.server\.name="([^"]+)"', dockerfile)

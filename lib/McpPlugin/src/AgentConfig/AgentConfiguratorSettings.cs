@@ -129,7 +129,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
         /// <summary>
         /// Base name of the shared MCP server executable / Docker container, used to build the
         /// Docker container name (<c>{ServerExecutableName}-{Port}</c>). Defaults to Unity's
-        /// <c>gamedev-mcp-server</c>; engines that ship a differently-named server override it.
+        /// <c>redpand-mcp-server</c>; engines that ship a differently-named server override it.
         /// </summary>
         public string ServerExecutableName { get; }
 
@@ -165,7 +165,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
             string? token = null,
             ConnectionMode connectionMode = ConnectionMode.Local,
             Consts.MCP.Server.AuthOption authOption = Consts.MCP.Server.AuthOption.none,
-            string serverExecutableName = "gamedev-mcp-server",
+            string serverExecutableName = "redpand-mcp-server",
             string serverVersion = "8.0.0",
             string dockerImage = "ghcr.io/red-panda-gamedev/redpand-mcp-server",
             LocalPortDerivation localPortDerivation = LocalPortDerivation.V2)
@@ -201,7 +201,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig
             string? token = null,
             ConnectionMode connectionMode = ConnectionMode.Local,
             Consts.MCP.Server.AuthOption authOption = Consts.MCP.Server.AuthOption.none,
-            string serverExecutableName = "gamedev-mcp-server",
+            string serverExecutableName = "redpand-mcp-server",
             string serverVersion = "8.0.0",
             string dockerImage = "ghcr.io/red-panda-gamedev/redpand-mcp-server",
             LocalPortDerivation localPortDerivation = LocalPortDerivation.V2)

@@ -6,7 +6,7 @@ One stdlib-only script (Python 3.9+) for every OS: it replaces `build-all.sh` an
 The project and `publish/` are anchored to the repo root (one level up), so any cwd works.
 
 Per RID: `dotnet publish <csproj> -c <config> -r <rid> --self-contained true
--p:PublishSingleFile=true -o publish/<rid>`, then `publish/gamedev-mcp-server-<rid>.zip`.
+-p:PublishSingleFile=true -o publish/<rid>`, then `publish/redpand-mcp-server-<rid>.zip`.
 The zip layout is the one the GitHub Release has always shipped:
   * win-*      -> flat (the files at the zip root), as .NET `ZipFile.CreateFromDirectory` made it;
   * linux/osx  -> under a `<rid>/` folder with Unix modes kept (the exec bit), as `zip -r` made it.
@@ -79,9 +79,9 @@ def publish(project, configuration, rid, out_dir):
 
 
 def zip_runtime(publish_root, rid):
-    """Write publish/gamedev-mcp-server-<rid>.zip from publish/<rid>/ and return its path."""
+    """Write publish/redpand-mcp-server-<rid>.zip from publish/<rid>/ and return its path."""
     src = publish_root / rid
-    zip_path = publish_root / ("gamedev-mcp-server-%s.zip" % rid)
+    zip_path = publish_root / ("redpand-mcp-server-%s.zip" % rid)
     prefix = "" if rid.startswith("win-") else rid + "/"
     # strict_timestamps=False clamps a pre-1980 mtime as zip -r and CreateFromDirectory did.
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as zf:
@@ -111,7 +111,7 @@ def run_zips(publish_root, runtimes):
         try:
             zip_path = zip_runtime(publish_root, rid)
         except (OSError, ValueError) as exc:
-            print("Failed to create gamedev-mcp-server-%s.zip: %s" % (rid, exc))
+            print("Failed to create redpand-mcp-server-%s.zip: %s" % (rid, exc))
             failed += 1
             continue
         print("Successfully created %s" % zip_path.name)

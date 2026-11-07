@@ -1,0 +1,13 @@
+RedPand MCP Server
+Copyright 2026 RedPand
+
+This repository is a modified copy of GameDev-MCP-Server
+(https://github.com/IvanMurzak/GameDev-MCP-Server), Copyright (c) 2026 Ivan Murzak,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Changes: own binary, image and registry names (redpand-mcp-server), the removal of the
+ai-game.dev hosted cloud (OAuth, sign-in, project keys), the plugin library built from
+source under lib/ (see lib/NOTICE), and own release workflows.
+
+Files that carry Ivan Murzak's copyright header keep it; RedPand's changes to them are
+covered by this notice.

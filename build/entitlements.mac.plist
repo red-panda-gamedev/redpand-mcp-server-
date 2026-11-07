@@ -4,7 +4,7 @@
 <dict>
   <!--
     Hardened-runtime entitlements required for the self-contained .NET
-    (single-file) gamedev-mcp-server host to run under Gatekeeper AND pass
+    (single-file) redpand-mcp-server host to run under Gatekeeper AND pass
     Apple notarization. The .NET runtime JITs managed code, so it needs
     allow-jit; the single-file host extracts/loads native libraries that are
     not all individually signed under this identity, so it needs
