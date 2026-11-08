@@ -19,7 +19,7 @@ namespace com.RedPand.MCP.Plugin.Tests.Infrastructure
     /// <summary>A thread-safe <see cref="ILogger"/> that records every formatted entry, for log assertions.</summary>
     public sealed class CapturingLogger : ILogger
     {
-        readonly List<(LogLevel Level, string Message)> _entries = new List<(LogLevel, string)>();
+        readonly List<(LogLevel Level, string Message, Exception? Exception)> _entries = new List<(LogLevel, string, Exception?)>();
 
         /// <summary>Every warning message logged so far, in order.</summary>
         public IReadOnlyList<string> Warnings
@@ -27,12 +27,18 @@ namespace com.RedPand.MCP.Plugin.Tests.Infrastructure
             get { lock (_entries) return _entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Message).ToList(); }
         }
 
+        /// <summary>Every entry logged so far, in order, with its level and exception.</summary>
+        public IReadOnlyList<(LogLevel Level, string Message, Exception? Exception)> Entries
+        {
+            get { lock (_entries) return _entries.ToList(); }
+        }
+
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             lock (_entries)
-                _entries.Add((logLevel, formatter(state, exception)));
+                _entries.Add((logLevel, formatter(state, exception), exception));
         }
 
         sealed class NullScope : IDisposable

@@ -26,7 +26,7 @@ namespace com.RedPand.MCP.Plugin.Common.Model
             {
                 case ResponseStatus.Error:
                     var errorMsg = response.Message ?? "Operation failed without specific error details";
-                    logger.LogError(ex, "{Context}Error: {Message}", contextPrefix, errorMsg);
+                    ResponseLogLevel.LogFailure(logger, response.ErrorKind, ex, $"{contextPrefix}Error: {errorMsg}");
                     break;
 
                 case ResponseStatus.Success:

@@ -312,7 +312,7 @@ namespace com.RedPand.MCP.Plugin.Server
                         }
                         catch (Exception ex)
                         {
-                            logger.LogError(ex, $"Invoke '{methodName}': Error invoking '{request}' on client '{connectionId}': {ex.Message}");
+                            logger.LogWarning("Invoke '{methodName}': client '{connectionId}' failed ({message}). Retrying.", methodName, connectionId, ex.Message);
                             await Task.Delay(50, cancellationToken); // Wait before retrying
                             continue;
                         }

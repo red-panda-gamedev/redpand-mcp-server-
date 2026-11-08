@@ -300,8 +300,8 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             // The seed this host replaces logs "Cannot resolve relative SkillsPath 'SKILLS' ...
             // ProjectRootPath is not set" at Error level during construction, which the console
             // formatter writes as a 'fail:' line BEFORE the ready line. The window is bounded at the
-            // ready line rather than at the end of the run because two tools in the catalog
-            // (fail / throw) are REQUIRED to produce errors, so an unbounded "zero fail: lines"
+            // ready line rather than at the end of the run because a tool in the catalog
+            // (fail) is REQUIRED to produce an error, so an unbounded "zero fail: lines"
             // assertion could not hold for any run that calls them.
             var startupWindow = engine.StdoutLinesBeforeReady();
             startupWindow.Count.ShouldBeGreaterThan(0,
@@ -319,11 +319,13 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             // out the empty set that would satisfy the attribution loop below for free.
             failBlocks.Count(block => block.Contains(FailMessage, StringComparison.Ordinal))
                 .ShouldBeGreaterThan(0, "null-engine/fail must log the error block it advertises. " + engine.Describe());
-            failBlocks.Count(block => block.Contains(ThrowMessage, StringComparison.Ordinal))
-                .ShouldBeGreaterThan(0, "null-engine/throw's exception must reach the engine's own error log. " + engine.Describe());
+            // throw raises an InvalidOperationException: the tool rejecting the request (422), not a fault of the
+            // engine. It is answered, so the engine logs it as a warning, never as a red error line.
+            engine.WarnBlocks().Count(block => block.Contains(ThrowMessage, StringComparison.Ordinal))
+                .ShouldBeGreaterThan(0, "null-engine/throw's exception must reach the engine's log as a warning. " + engine.Describe());
             foreach (var block in failBlocks)
             {
-                (block.Contains(FailMessage, StringComparison.Ordinal) || block.Contains(ThrowMessage, StringComparison.Ordinal))
+                block.Contains(FailMessage, StringComparison.Ordinal)
                     .ShouldBeTrue("unexpected error logged by the engine:\n" + block);
             }
 
@@ -646,13 +648,18 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             /// Every <c>fail:</c> line plus the indented continuation lines the console formatter
             /// writes under it, which is where the message itself lives.
             /// </summary>
-            public IReadOnlyList<string> FailBlocks()
+            public IReadOnlyList<string> FailBlocks() => Blocks("fail:");
+
+            /// <summary>The same for <c>warn:</c> lines.</summary>
+            public IReadOnlyList<string> WarnBlocks() => Blocks("warn:");
+
+            IReadOnlyList<string> Blocks(string prefix)
             {
                 var lines = StdoutLines;
                 var blocks = new List<string>();
                 for (var i = 0; i < lines.Count; i++)
                 {
-                    if (!lines[i].StartsWith("fail:", StringComparison.Ordinal))
+                    if (!lines[i].StartsWith(prefix, StringComparison.Ordinal))
                         continue;
 
                     var block = new StringBuilder(lines[i]);

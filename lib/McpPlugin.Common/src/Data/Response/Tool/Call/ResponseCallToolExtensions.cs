@@ -18,7 +18,7 @@ namespace com.RedPand.MCP.Plugin.Common.Model
         public static ResponseCallTool Log(this ResponseCallTool target, ILogger logger, Exception? ex = null)
         {
             if (target.Status == ResponseStatus.Error)
-                logger.LogError(ex, $"Error Response to AI:\n{target.GetMessage()}");
+                ResponseLogLevel.LogFailure(logger, target.ErrorKind, ex, $"Error Response to AI:\n{target.GetMessage()}");
             else if (target.Status == ResponseStatus.Success)
                 logger.LogInformation(ex, $"Success Response to AI:\n{target.GetMessage()}");
             else if (target.Status == ResponseStatus.Processing)

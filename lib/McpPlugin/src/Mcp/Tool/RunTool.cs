@@ -267,7 +267,7 @@ namespace com.RedPand.MCP.Plugin
             catch (ArgumentException ex)
             {
                 var errorMessage = $"Parameter validation failed for tool '{Title ?? this.Method?.Name}': {ex.Message}";
-                _logger?.LogError(ex, errorMessage);
+                _logger?.LogDebug(ex, errorMessage); // a bad request: the caller logs the answer
                 return ResponseCallTool
                     .Error(errorMessage, ResponseErrorKind.BadRequest)
                     .SetRequestID(requestId);
@@ -275,7 +275,7 @@ namespace com.RedPand.MCP.Plugin
             catch (TargetParameterCountException ex)
             {
                 var errorMessage = $"Parameter count mismatch for tool '{Title ?? this.Method?.Name}'. Expected {this.Method?.GetParameters().Length} parameters, but received {parameters?.Length}";
-                _logger?.LogError(ex, errorMessage);
+                _logger?.LogDebug(ex, errorMessage); // a bad request: the caller logs the answer
                 return ResponseCallTool
                     .Error(errorMessage, ResponseErrorKind.BadRequest)
                     .SetRequestID(requestId);
@@ -314,7 +314,7 @@ namespace com.RedPand.MCP.Plugin
             catch (ArgumentException ex)
             {
                 var errorMessage = $"Parameter validation failed for tool '{Title ?? this.Method?.Name}': {ex.Message}";
-                _logger?.LogError(ex, errorMessage);
+                _logger?.LogDebug(ex, errorMessage); // a bad request: the caller logs the answer
                 return ResponseCallTool
                     .Error(errorMessage, ResponseErrorKind.BadRequest)
                     .SetRequestID(requestId);
@@ -322,7 +322,7 @@ namespace com.RedPand.MCP.Plugin
             catch (JsonException ex)
             {
                 var errorMessage = $"JSON parameter parsing failed for tool '{Title ?? this.Method?.Name}': {ex.Message}";
-                _logger?.LogError(ex, errorMessage);
+                _logger?.LogDebug(ex, errorMessage); // a bad request: the caller logs the answer
                 return ResponseCallTool
                     .Error(errorMessage, ResponseErrorKind.BadRequest)
                     .SetRequestID(requestId);
@@ -348,8 +348,13 @@ namespace com.RedPand.MCP.Plugin
             // A ToolUnavailableException keeps its own message whatever wraps it (an AggregateException from a blocking wait).
             var reported = thrown is ToolUnavailableException ? thrown : ex.InnerException ?? ex;
             var errorMessage = $"Tool execution failed for '{Title ?? this.Method?.Name}': {reported.Message}";
-            _logger?.LogError(ex, $"{errorMessage}\n{ex.StackTrace}");
-            var response = fault || IsFrameworkFault(ex)
+            var isFault = fault || IsFrameworkFault(ex);
+            // A fault is ours: log it once, with its stack. Anything else answers the request, and the caller logs the answer.
+            if (isFault)
+                _logger?.LogError(ex, errorMessage);
+            else
+                _logger?.LogDebug(ex, errorMessage);
+            var response = isFault
                 ? ResponseCallTool.Error(errorMessage, ResponseErrorKind.Internal)
                 : thrown is ToolUnavailableException
                     ? ResponseCallTool.Error(errorMessage, ResponseErrorKind.Unavailable, ToolUnavailableException.StatusCodeOf(thrown))

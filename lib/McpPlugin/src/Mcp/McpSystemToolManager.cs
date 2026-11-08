@@ -83,15 +83,19 @@ namespace com.RedPand.MCP.Plugin
                 _logger.LogDebug("Executing system tool '{name}'.", name);
                 var result = await tool.Run(request.RequestID, request.Arguments, cancellationToken);
                 if (result == null)
-                    return ResponseData<ResponseCallTool>.Error(request.RequestID, $"System tool '{name}' returned null result.", ResponseErrorKind.Internal);
+                    return ResponseData<ResponseCallTool>.Error(request.RequestID, $"System tool '{name}' returned null result.", ResponseErrorKind.Internal)
+                        .Log(_logger);
 
+                if (result.Status == ResponseStatus.Error)
+                    result.Log(_logger); // the tool logged a bad request only at Debug
                 return result.Pack(request.RequestID);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "System tool '{name}' failed.", name);
+                var kind = ClassifyException(ex);
+                ResponseLogLevel.LogFailure(_logger, kind, ex, $"System tool '{name}' failed: {ex.Message}");
                 return ResponseData<ResponseCallTool>.Error(request.RequestID, $"System tool '{name}' failed: {ex.Message}",
-                    ClassifyException(ex), ToolUnavailableException.StatusCodeOf(ex));
+                    kind, ToolUnavailableException.StatusCodeOf(ex));
             }
         }
 
