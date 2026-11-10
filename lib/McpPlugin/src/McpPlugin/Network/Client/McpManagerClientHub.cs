@@ -239,6 +239,37 @@ namespace com.RedPand.MCP.Plugin
             return _connectionManager.InvokeAsync<RequestResourcesUpdated, ResponseData>(nameof(IServerMcpManager.NotifyAboutUpdatedResources), request, cancellationToken);
         }
 
+        // Set when the server has no NotifyEditorState (a server before McpPlugin 8.20.0); cleared on each new connection.
+        volatile bool _editorStateUnsupported;
+        HubConnectionState _lastEditorStateConnection = HubConnectionState.Disconnected;
+
+        public async Task NotifyEditorState(RequestEditorState request)
+        {
+            var state = ConnectionState.CurrentValue;
+            if (state != _lastEditorStateConnection)
+            {
+                _lastEditorStateConnection = state;
+                _editorStateUnsupported = false;
+            }
+            if (request == null || state != HubConnectionState.Connected || _editorStateUnsupported)
+                return;
+            try
+            {
+                await _connectionManager.InvokeAsync<RequestEditorState, ResponseData>(
+                    nameof(IServerEditorStateHub.NotifyEditorState), request, _cancellationTokenSource.Token);
+            }
+            catch (Exception ex) when (ex.Message.IndexOf("does not exist", StringComparison.OrdinalIgnoreCase) >= 0
+                                       || ex.Message.IndexOf("Method not found", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _editorStateUnsupported = true;
+                _logger.LogDebug("The server does not take editor states; not sending them on this connection.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not send the editor state '{state}'.", request.State);
+            }
+        }
+
         public Task<ResponseData> NotifyToolRequestCompleted(RequestToolCompletedData request) => NotifyToolRequestCompleted(request, _cancellationTokenSource.Token);
         public Task<ResponseData> NotifyToolRequestCompleted(RequestToolCompletedData request, CancellationToken cancellationToken = default)
         {

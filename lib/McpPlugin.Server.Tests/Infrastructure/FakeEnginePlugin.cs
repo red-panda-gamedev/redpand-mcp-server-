@@ -124,6 +124,11 @@ namespace com.RedPand.MCP.Plugin.Server.Tests.Infrastructure
         /// <summary>Drops the connection the way a plugin does before a reload.</summary>
         public Task StopAsync() => _connection?.StopAsync() ?? Task.CompletedTask;
 
+        /// <summary>Tells the server what the editor is doing, as McpPlugin 8.20.0+ does.</summary>
+        public Task SendEditorStateAsync(string state, string? detail = null, DateTime? sinceUtc = null)
+            => _connection!.InvokeAsync<ResponseData>("NotifyEditorState",
+                new RequestEditorState { State = state, Detail = detail, SinceUtc = sinceUtc ?? DateTime.UtcNow });
+
         /// <summary>True when the server told this plugin it was replaced within <paramref name="window"/>.</summary>
         public async Task<bool> WasEvictedWithin(TimeSpan window)
             => await Task.WhenAny(ForceDisconnected.Task, Task.Delay(window)) == ForceDisconnected.Task;

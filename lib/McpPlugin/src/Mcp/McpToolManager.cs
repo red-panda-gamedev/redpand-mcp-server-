@@ -89,6 +89,9 @@ namespace com.RedPand.MCP.Plugin
         /// <inheritdoc cref="IToolManager.RunGate"/>
         public Func<IRunTool, string?>? RunGate { get; set; }
 
+        /// <inheritdoc cref="IToolManager.Interceptor"/>
+        public IToolCallInterceptor? Interceptor { get; set; }
+
         private IToolBinding? _toolBinding;
 
         /// <summary>
@@ -199,12 +202,21 @@ namespace com.RedPand.MCP.Plugin
                     _logger.LogInformation(message);
                 }
 
+                var interceptor = Interceptor;
+                var kept = Intercept(() => interceptor?.Before(data, runner));
+                if (kept != null)
+                {
+                    _logger.LogInformation("Tool '{0}' ({1}) answered without running it: {2}", data.Name, data.RequestID, kept.Status);
+                    return kept.SetRequestID(data.RequestID).Pack(data.RequestID);
+                }
+
                 var result = await runner.Run(data.RequestID, data.Arguments, cancellationToken);
                 if (result == null)
                     return ResponseData<ResponseCallTool>.Error(data.RequestID, $"Tool '{data.Name}' returned null result.", ResponseErrorKind.Internal)
                         .Log(_logger);
 
                 result.Log(_logger);
+                Intercept(() => { interceptor?.After(data, runner, result); return null; });
 
                 return result.Pack(data.RequestID);
             }
@@ -213,6 +225,17 @@ namespace com.RedPand.MCP.Plugin
                 return ResponseData<ResponseCallTool>.Error(data.RequestID, $"Failed to run tool '{data.Name}'. Exception: {ex.Message}",
                         ClassifyException(ex), ToolUnavailableException.StatusCodeOf(ex))
                     .Log(_logger, $"RunCallTool[{data.Name}]", ex);
+            }
+        }
+
+        // An interceptor that throws must not fail the call: the call runs as if there were none.
+        ResponseCallTool? Intercept(Func<ResponseCallTool?> step)
+        {
+            try { return step(); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "The tool call interceptor failed; ignoring it.");
+                return null;
             }
         }
 

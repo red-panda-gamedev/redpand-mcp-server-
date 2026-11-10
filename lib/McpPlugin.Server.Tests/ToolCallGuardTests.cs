@@ -14,8 +14,10 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using com.RedPand.MCP.Plugin.Common;
 using com.RedPand.MCP.Plugin.Common.Model;
 using com.RedPand.MCP.Plugin.Server.Tests.Infrastructure;
+using com.RedPand.MCP.Plugin.Server.Tools;
 using Shouldly;
 using Xunit;
 
@@ -262,9 +264,18 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
         sealed class Reload
         {
             readonly ToolCallClient _client;
+            readonly string? _mcpPluginVersion;
+            readonly Func<FakeEnginePlugin, RequestCallTool, Task<ResponseData<ResponseCallTool>>>? _onCall;
             Task<FakeEnginePlugin>? _task;
 
-            public Reload(ToolCallClient client) => _client = client;
+            /// <param name="mcpPluginVersion">What the reloaded plugin reports; 8.19.0 plays a plugin without a call journal.</param>
+            public Reload(ToolCallClient client, string? mcpPluginVersion = "8.19.0",
+                Func<FakeEnginePlugin, RequestCallTool, Task<ResponseData<ResponseCallTool>>>? onCall = null)
+            {
+                _client = client;
+                _mcpPluginVersion = mcpPluginVersion;
+                _onCall = onCall;
+            }
 
             public void Start(FakeEnginePlugin plugin, TimeSpan delayBeforeStop)
             {
@@ -273,7 +284,8 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
                     await Task.Delay(delayBeforeStop);
                     await plugin.StopAsync();
                     await Task.Delay(300);
-                    var reloaded = _client.Plugin("reloaded", "Godot 4.5");
+                    var reloaded = _client.Plugin("reloaded", "Godot 4.5", onCall: _onCall);
+                    reloaded.McpPluginVersion = _mcpPluginVersion;
                     await reloaded.StartAsync();
                     return reloaded;
                 });
@@ -460,6 +472,139 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             var (status, body) = await client.RestAsync("echo", "{}").WaitAsync(TimeSpan.FromSeconds(30));
             status.ShouldBe(502);
             body!["error"]!.GetValue<string>().ShouldStartWith("[plugin_disconnected]");
+        }
+
+        // ───────────────────────────── journal, editor states, callers ─────────────────────────────
+
+        [Fact]
+        public async Task CallDroppedAfterSending_ToAJournalingPlugin_IsSentAgainWithTheSameRequestId()
+        {
+            // McpPlugin 8.20.0+ answers a request id it already ran from its journal, so any call may be sent again.
+            await using var host = await NoneAuthMcpHost.StartAsync();
+            using var client = new ToolCallClient(host);
+            var reload = new Reload(client, Consts.PluginVersion, onCall: (_, request)
+                => Task.FromResult(FakeEnginePlugin.Success(request, "from the journal")));
+            string? firstId = null;
+            await using var editor = client.Plugin("editor", "Godot 4.5", onCall: async (plugin, request) =>
+            {
+                firstId = request.RequestID;
+                reload.Start(plugin, TimeSpan.Zero);
+                await Task.Delay(Timeout.Infinite, plugin.Disposed);
+                return FakeEnginePlugin.Success(request, "never");
+            });
+            await editor.StartAsync();
+
+            try
+            {
+                var (status, body) = await client.RestAsync("echo", "{}").WaitAsync(TimeSpan.FromSeconds(30));
+                status.ShouldBe(200, body?.ToJsonString());
+                var reloaded = await reload.PluginAsync();
+                reloaded.Calls.Count.ShouldBe(1);
+                reloaded.Calls.TryPeek(out var resent).ShouldBeTrue();
+                resent!.RequestID.ShouldBe(firstId);
+            }
+            finally
+            {
+                await reload.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task CallToAnEditorThatSaidItWasClosing_FailsAtOnce()
+        {
+            PluginEditorStates.Reset();
+            await using var host = await NoneAuthMcpHost.StartAsync(null, "plugin-reconnect-wait-seconds=60");
+            using var client = new ToolCallClient(host);
+            var editor = client.Plugin("editor", "Godot 4.5");
+            await editor.StartAsync();
+            await editor.SendEditorStateAsync(RequestEditorState.Closing, "the user quit");
+            await editor.DisposeAsync();
+            await Task.Delay(300);
+
+            try
+            {
+                var started = System.Diagnostics.Stopwatch.StartNew();
+                var (status, body) = await client.RestAsync("echo", "{}").WaitAsync(TimeSpan.FromSeconds(30));
+                started.Elapsed.ShouldBeLessThan(TimeSpan.FromSeconds(10), "not the 60 s reconnect wait");
+                status.ShouldBe(503);
+                var error = body!["error"]!.GetValue<string>();
+                error.ShouldStartWith("[editor_closed]");
+                error.ShouldContain("the user quit");
+            }
+            finally
+            {
+                PluginEditorStates.Reset();
+            }
+        }
+
+        [Fact]
+        public async Task EditorThatComesBack_IsCalledAgain_AfterItHadClosed()
+        {
+            PluginEditorStates.Reset();
+            await using var host = await NoneAuthMcpHost.StartAsync();
+            using var client = new ToolCallClient(host);
+            var closing = client.Plugin("editor", "Godot 4.5");
+            await closing.StartAsync();
+            await closing.SendEditorStateAsync(RequestEditorState.Closing);
+            await closing.DisposeAsync();
+            await Task.Delay(300);
+            await using var reopened = client.Plugin("reopened", "Godot 4.5");
+            await reopened.StartAsync();
+
+            var (isError, text) = await client.CallAsync("echo", new { }).WaitAsync(TimeSpan.FromSeconds(30));
+            isError.ShouldBeFalse(text);
+            text.ShouldBe("reopened:echo");
+        }
+
+        [Fact]
+        public async Task Timeout_SaysWhatTheEditorWasBusyWith()
+        {
+            PluginEditorStates.Reset();
+            await using var host = await NoneAuthMcpHost.StartAsync(null, "tool-timeout=2000");
+            using var client = new ToolCallClient(host);
+            await using var editor = client.Plugin("editor", "Godot 4.5", onCall: async (plugin, request) =>
+            {
+                await plugin.SendEditorStateAsync(RequestEditorState.Busy, "importing Assets/Hero.fbx");
+                await Task.Delay(Timeout.Infinite, plugin.Disposed);
+                return FakeEnginePlugin.Success(request, "never");
+            });
+            await editor.StartAsync();
+
+            var (status, body) = await client.RestAsync("echo", "{}").WaitAsync(TimeSpan.FromSeconds(30));
+            status.ShouldBe(504);
+            var error = body!["error"]!.GetValue<string>();
+            error.ShouldStartWith("[tool_timeout]");
+            error.ShouldContain("busy");
+            error.ShouldContain("importing Assets/Hero.fbx");
+        }
+
+        [Fact]
+        public async Task McpCall_CarriesTheCallersLabel()
+        {
+            await using var host = await NoneAuthMcpHost.StartAsync();
+            using var client = new ToolCallClient(host);
+            await using var editor = client.Plugin("editor", "Godot 4.5");
+            await editor.StartAsync();
+
+            var (isError, text) = await client.CallAsync("echo", new { });
+            isError.ShouldBeFalse(text);
+            editor.Calls.TryPeek(out var call).ShouldBeTrue();
+            call!.Caller.ShouldNotBeNullOrEmpty();
+            call.Caller!.ShouldMatch("^.+#[0-9a-f]{4}$");
+        }
+
+        [Theory]
+        [InlineData("claude-code", "session-1", true)]
+        [InlineData(null, "session-1", true)]
+        [InlineData("cursor", null, false)]
+        public void CallerLabel_IsTheClientAndAShortSessionHash(string? client, string? session, bool hashed)
+        {
+            var label = ToolRouter.CallerLabel(client, session)!;
+            label.ShouldStartWith(client ?? "agent");
+            (label.Contains('#')).ShouldBe(hashed);
+            ToolRouter.CallerLabel(client, session).ShouldBe(label, "stable for one session");
+            if (hashed)
+                ToolRouter.CallerLabel(client, session + "x").ShouldNotBe(label);
         }
     }
 }

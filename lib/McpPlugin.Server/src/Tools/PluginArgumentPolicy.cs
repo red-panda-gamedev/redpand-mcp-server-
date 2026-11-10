@@ -29,7 +29,14 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
         /// <summary>The first McpPlugin version whose <c>required</c> lists match what its binder needs.</summary>
         public static readonly System.Version FirstEnforcedVersion = new System.Version(8, 14, 0);
 
+        /// <summary>
+        /// The first McpPlugin version that keeps a journal of the calls it ran: a call sent again with the same request
+        /// id is answered with the first run's result, so the server may resend any call lost to a reload.
+        /// </summary>
+        public static readonly System.Version FirstJournaledVersion = new System.Version(8, 20, 0);
+
         static readonly ConcurrentDictionary<string, bool> Enforced = new ConcurrentDictionary<string, bool>(StringComparer.Ordinal);
+        static readonly ConcurrentDictionary<string, bool> Journaled = new ConcurrentDictionary<string, bool>(StringComparer.Ordinal);
 
         /// <summary>Records the McpPlugin version a connection's handshake reported (null when it reported none).</summary>
         public static void Record(string connectionId, string? mcpPluginVersion)
@@ -37,14 +44,21 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
             if (string.IsNullOrEmpty(connectionId))
                 return;
             Enforced[connectionId] = EnforcesRequired(mcpPluginVersion);
+            Journaled[connectionId] = AtLeast(mcpPluginVersion, FirstJournaledVersion);
         }
 
         /// <summary>Forgets a closed connection.</summary>
         public static void Forget(string connectionId)
         {
-            if (!string.IsNullOrEmpty(connectionId))
-                Enforced.TryRemove(connectionId, out _);
+            if (string.IsNullOrEmpty(connectionId))
+                return;
+            Enforced.TryRemove(connectionId, out _);
+            Journaled.TryRemove(connectionId, out _);
         }
+
+        /// <summary>Whether the plugin on <paramref name="connectionId"/> answers a resent call from its journal (8.20.0+).</summary>
+        public static bool IsJournaled(string? connectionId)
+            => connectionId != null && Journaled.TryGetValue(connectionId, out var journaled) && journaled;
 
         /// <summary>
         /// Whether calls to <paramref name="connectionId"/> are validated: only after a handshake
@@ -57,7 +71,10 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
         /// True when <paramref name="mcpPluginVersion"/> is 8.14.0 or newer. A pre-release or build suffix is
         /// ignored (<c>8.14.0-dev.x</c> counts as 8.14.0); null, empty or unparsable is false.
         /// </summary>
-        public static bool EnforcesRequired(string? mcpPluginVersion)
+        public static bool EnforcesRequired(string? mcpPluginVersion) => AtLeast(mcpPluginVersion, FirstEnforcedVersion);
+
+        /// <summary>True when <paramref name="mcpPluginVersion"/> is <paramref name="first"/> or newer (a suffix is ignored).</summary>
+        public static bool AtLeast(string? mcpPluginVersion, System.Version first)
         {
             if (string.IsNullOrWhiteSpace(mcpPluginVersion))
                 return false;
@@ -66,7 +83,7 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
             if (cut >= 0)
                 text = text.Substring(0, cut);
             return System.Version.TryParse(text, out var version)
-                && new System.Version(version.Major, version.Minor, Math.Max(version.Build, 0)) >= FirstEnforcedVersion;
+                && new System.Version(version.Major, version.Minor, Math.Max(version.Build, 0)) >= first;
         }
     }
 }

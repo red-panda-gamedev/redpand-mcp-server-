@@ -34,7 +34,10 @@ namespace com.RedPand.MCP.Plugin
         /// error and the tool does not run; null lets it run. Managers that do not support it ignore it.
         /// </summary>
         Func<IRunTool, string?>? RunGate { get => null; set { } }
-        
+
+        /// <summary>Sees each call around its run (see <see cref="IToolCallInterceptor"/>). Managers that do not support it ignore it.</summary>
+        IToolCallInterceptor? Interceptor { get => null; set { } }
+
         /// <summary>
         /// Gets the total token count for all visible tools (the ones listed in <c>tools/list</c>).
         /// This is calculated as the sum of TokenCount for each visible tool.

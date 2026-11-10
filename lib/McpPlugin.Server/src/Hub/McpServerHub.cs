@@ -27,7 +27,7 @@ using Microsoft.Extensions.Logging;
 
 namespace com.RedPand.MCP.Plugin.Server
 {
-    public class McpServerHub : BaseHub<IClientMcpRpc>, IServerMcpManager
+    public class McpServerHub : BaseHub<IClientMcpRpc>, IServerMcpManager, IServerEditorStateHub
     {
         readonly Common.Version _version;
         readonly IDataArguments _dataArguments;
@@ -127,6 +127,7 @@ namespace com.RedPand.MCP.Plugin.Server
                 return Task.CompletedTask;
 
             PluginArgumentPolicy.Forget(Context.ConnectionId);
+            PluginEditorStates.OnDisconnected(Context.ConnectionId);
             _webhookCollector.OnPluginDisconnected(Context.ConnectionId);
             // Every plugin-side close keeps the lists for the reconnect grace: the server cannot tell a
             // recompile from a closed project. See PluginCatalogCache for what drops them early.
@@ -212,6 +213,14 @@ namespace com.RedPand.MCP.Plugin.Server
             return ResponseData.Success(data.RequestId, string.Empty).TaskFromResult();
         }
 
+        /// <summary>The plugin says what its editor is doing (see <see cref="PluginEditorStates"/>).</summary>
+        public Task<ResponseData> NotifyEditorState(RequestEditorState request)
+        {
+            _logger.LogDebug("{method}. {guid}. {state}: {detail}", nameof(NotifyEditorState), _guid, request?.State, request?.Detail);
+            PluginEditorStates.Record(Context.ConnectionId, request);
+            return ResponseData.Success(request?.RequestID ?? string.Empty, string.Empty).TaskFromResult();
+        }
+
         public Task<VersionHandshakeResponse> PerformVersionHandshake(RequestVersionHandshake request) => PerformVersionHandshake(request, default);
         protected virtual Task<VersionHandshakeResponse> PerformVersionHandshake(RequestVersionHandshake request, CancellationToken cancellationToken = default)
         {
@@ -246,6 +255,7 @@ namespace com.RedPand.MCP.Plugin.Server
                     // Which argument checks this plugin gets (McpPlugin 8.14.0+ reports its version); recorded before
                     // the classification, which makes the connection routable.
                     PluginArgumentPolicy.Record(Context.ConnectionId, request.McpPluginVersion);
+                    PluginEditorStates.OnConnected(Context.ConnectionId);
                     // Classified only after an accepted handshake: a refused plugin must not replace a working one.
                     ClassifyPlugin(request.Environment, request.McpPluginVersion);
 

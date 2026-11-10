@@ -19,5 +19,11 @@ namespace com.RedPand.MCP.Plugin
         /// Gets the version handshake response status if a handshake has been performed; otherwise, null.
         /// </summary>
         VersionHandshakeResponse? VersionHandshakeStatus { get; }
+
+        /// <summary>
+        /// Tells the server what the editor is doing (<see cref="IServerEditorStateHub"/>) while connected; never throws,
+        /// and a server without the method is not asked again on this connection. Hubs that cannot send it ignore it.
+        /// </summary>
+        System.Threading.Tasks.Task NotifyEditorState(RequestEditorState request) => System.Threading.Tasks.Task.CompletedTask;
     }
 }

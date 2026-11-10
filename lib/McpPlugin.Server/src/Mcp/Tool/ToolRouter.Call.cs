@@ -43,7 +43,10 @@ namespace com.RedPand.MCP.Plugin.Server
             var argumentsDict = request.Params.Arguments as IReadOnlyDictionary<string, JsonElement>
                 ?? new Dictionary<string, JsonElement>();
 
-            var requestData = new RequestCallTool(request.Params.Name, argumentsDict);
+            var requestData = new RequestCallTool(request.Params.Name, argumentsDict)
+            {
+                Caller = CallerLabel(request.Server?.ClientInfo?.Name, request.Server?.SessionId)
+            };
             if (logger.IsTraceEnabled)
                 logger.Trace("Call remote tool '{0}':\n{1}", request.Params.Name, requestData.ToPrettyJson());
 
@@ -61,6 +64,24 @@ namespace com.RedPand.MCP.Plugin.Server
                 return new CallToolResult().SetError("[Error] Tool returned null value");
 
             return response.Value.ToCallToolResult();
+        }
+
+        /// <summary>
+        /// A short, stable name for one agent session, e.g. "claude-code#3fa2": the client's name and four hex digits of a
+        /// hash of the MCP session id (the id itself is not sent). Null when the session is unknown.
+        /// </summary>
+        public static string? CallerLabel(string? clientName, string? sessionId)
+        {
+            if (string.IsNullOrEmpty(clientName) && string.IsNullOrEmpty(sessionId))
+                return null;
+            var name = string.IsNullOrWhiteSpace(clientName) ? "agent" : clientName!.Trim();
+            if (name.Length > 24)
+                name = name.Substring(0, 24);
+            if (string.IsNullOrEmpty(sessionId))
+                return name;
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(sessionId!));
+            return name + "#" + hash[0].ToString("x2") + hash[1].ToString("x2");
         }
     }
 }

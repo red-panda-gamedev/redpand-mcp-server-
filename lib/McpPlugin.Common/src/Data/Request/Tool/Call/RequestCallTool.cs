@@ -19,6 +19,12 @@ namespace com.RedPand.MCP.Plugin.Common.Model
         public string Name { get; set; } = string.Empty;
         public IReadOnlyDictionary<string, JsonElement> Arguments { get; set; } = new Dictionary<string, JsonElement>();
 
+        /// <summary>
+        /// Who sent the call: the agent session's short label (client name and a hash of the MCP session), set by the
+        /// server. Null from a server that does not set it. Lets an editor shared by several agents tell them apart.
+        /// </summary>
+        public string? Caller { get; set; }
+
         public RequestCallTool() { }
         public RequestCallTool(string name, IReadOnlyDictionary<string, JsonElement> arguments)
             : this(Guid.NewGuid().ToString(), name, arguments) { }

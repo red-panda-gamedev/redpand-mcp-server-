@@ -160,6 +160,8 @@ namespace com.RedPand.MCP.Server.Tests
                     await plugin.StopAsync();
                     await Task.Delay(300);
                     var reloaded = _server.NewPlugin("reloaded", "Godot 4.5");
+                    // A plugin before McpPlugin 8.20.0 keeps no call journal: a call that may have run is not sent again.
+                    reloaded.McpPluginVersion = "8.19.0";
                     await reloaded.StartAsync();
                     return reloaded;
                 });

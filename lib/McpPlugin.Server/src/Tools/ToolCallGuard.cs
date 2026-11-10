@@ -47,6 +47,9 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
 
         /// <summary>The plugin refused the call while reloading; not re-sent (HTTP 503).</summary>
         public const string PluginReloading = "[plugin_reloading]";
+
+        /// <summary>The editor said it was closing and is gone: the call is not sent and not waited for (HTTP 503).</summary>
+        public const string EditorClosed = "[editor_closed]";
     }
 
     /// <summary>
@@ -128,6 +131,10 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                     : await send(cancellationToken);
             }
 
+            // An editor that said it was closing is not waited for: it will not come back on its own.
+            if (CurrentTarget() == null && PluginEditorStates.ClosedMessage(request.Name) is { } closed)
+                return Fail(request, closed, ResponseErrorKind.Unavailable, ResponseCallTool.NotExecutedStatusCode);
+
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(_toolTimeout);
             var elapsed = Stopwatch.StartNew();
@@ -176,12 +183,19 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                     {
                         var window = RemainingWindow(elapsed);
                         var back = await WaitForReconnectAsync(target, window, deadline.Token, cancellationToken);
-                        if (back && !deadline.IsCancellationRequested && harmlessResends < MaxHarmlessResends && IsHarmlessToRepeat(target, request.Name))
+                        if (back && !deadline.IsCancellationRequested && harmlessResends < MaxHarmlessResends
+                            && (IsHarmlessToRepeat(target, request.Name) || PluginArgumentPolicy.IsJournaled(CurrentTarget())))
                         {
                             harmlessResends++;
-                            _logger.LogInformation("Tool '{tool}': the plugin reconnected while it ran; it is safe to repeat, sending it again.", request.Name);
+                            // A journaling plugin answers the same request id with the result of the run it already did.
+                            _logger.LogInformation("Tool '{tool}': the plugin reconnected while it ran; sending it again (safe to repeat, or answered from the plugin's journal).", request.Name);
                             continue;
                         }
+                        if (!back && PluginEditorStates.ClosedMessage(request.Name) != null)
+                            return Fail(request,
+                                $"{ToolCallErrors.EditorClosed} The Unity editor closed while running '{request.Name}', so the call may already have run. " +
+                                "Open the project in the editor, call wait, check the call's effect, then retry it if it did not happen.",
+                                ResponseErrorKind.Unavailable, ClientUtils.MaybeDeliveredStatusCode);
                         return Fail(request, back
                             ? $"{ToolCallErrors.PluginReconnected} The engine plugin disconnected while running '{request.Name}' (usually a script or " +
                               "assembly reload) and is connected again. The call was not re-sent because it may already have run: " +
@@ -440,6 +454,9 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                     return true;
                 if (waited.Elapsed >= window)
                     return false;
+                // The editor closed (it said so before it disconnected): it will not come back within the window.
+                if (current == null && PluginEditorStates.ClosedMessage(string.Empty) != null)
+                    return false;
                 if (current != null && waited.Elapsed >= SameConnectionSettle)
                     return true;
                 try
@@ -464,6 +481,8 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                 "Raise the limit with --tool-timeout=<ms> or MCP_PLUGIN_TOOL_TIMEOUT.";
             if (!string.IsNullOrEmpty(detail))
                 message += " Detail: " + detail;
+            if (PluginEditorStates.BusyNote(CurrentTarget()) is { } busy)
+                message += " " + busy;
             return Fail(request, message, ResponseErrorKind.Timeout, ClientUtils.ServerTimeoutStatusCode);
         }
 
