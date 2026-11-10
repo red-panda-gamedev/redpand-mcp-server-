@@ -75,6 +75,7 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
 
         /// <summary>A call refused as not executed is sent again at least this often while the plugin stays connected.</summary>
         static readonly TimeSpan RefusalRetryInterval = TimeSpan.FromSeconds(2);
+        const int MaxHarmlessResends = 2; // a call that keeps killing the plugin must not loop until the deadline
 
         /// <summary>After a failure, a target that is still the same connection this long is taken as never having left.</summary>
         static readonly TimeSpan SameConnectionSettle = TimeSpan.FromSeconds(2);
@@ -144,6 +145,7 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                     return Fail(request, invalid, ResponseErrorKind.BadRequest, 400);
 
                 var resendDeadline = elapsed.Elapsed + _reconnectWait;
+                var harmlessResends = 0;
                 while (true)
                 {
                     var target = CurrentTarget();
@@ -174,6 +176,12 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                     {
                         var window = RemainingWindow(elapsed);
                         var back = await WaitForReconnectAsync(target, window, deadline.Token, cancellationToken);
+                        if (back && !deadline.IsCancellationRequested && harmlessResends < MaxHarmlessResends && IsHarmlessToRepeat(target, request.Name))
+                        {
+                            harmlessResends++;
+                            _logger.LogInformation("Tool '{tool}': the plugin reconnected while it ran; it is safe to repeat, sending it again.", request.Name);
+                            continue;
+                        }
                         return Fail(request, back
                             ? $"{ToolCallErrors.PluginReconnected} The engine plugin disconnected while running '{request.Name}' (usually a script or " +
                               "assembly reload) and is connected again. The call was not re-sent because it may already have run: " +
@@ -191,6 +199,10 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                 return TimedOut(request, sent, null);
             }
         }
+
+        /// <summary>True when the plugin listed the tool as read-only, or idempotent and not destructive.</summary>
+        bool IsHarmlessToRepeat(string? connectionId, string toolName)
+            => connectionId != null && _schemas.TryGetValue(connectionId, out var listed) && listed.HarmlessToRepeat.Contains(toolName);
 
         ResponseData<ResponseCallTool> Reloading(RequestCallTool request, bool back, TimeSpan window, string? pluginMessage)
             => Fail(request, back
@@ -324,15 +336,18 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
                 return null;
             var byName = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             var targets = new Dictionary<string, ToolTarget>(StringComparer.Ordinal);
+            var harmless = new HashSet<string>(StringComparer.Ordinal);
             foreach (var tool in tools)
             {
                 if (tool?.Name == null)
                     continue;
                 targets[tool.Name] = tool.Target ?? ToolTarget.Both;
+                if (tool.ReadOnlyHint == true || (tool.IdempotentHint == true && tool.DestructiveHint == false))
+                    harmless.Add(tool.Name);
                 if (tool.InputSchema.ValueKind == JsonValueKind.Object)
                     byName[tool.Name] = tool.InputSchema.Clone();
             }
-            return Store(connectionId, new SchemaSnapshot(byName, targets, Stopwatch.StartNew(), failed: false));
+            return Store(connectionId, new SchemaSnapshot(byName, targets, Stopwatch.StartNew(), failed: false, harmless));
         }
 
         SchemaSnapshot Store(string connectionId, SchemaSnapshot snapshot)
@@ -345,8 +360,9 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
 
         internal sealed class SchemaSnapshot
         {
-            public SchemaSnapshot(IReadOnlyDictionary<string, JsonElement> byName, IReadOnlyDictionary<string, ToolTarget> targets, Stopwatch age, bool failed)
+            public SchemaSnapshot(IReadOnlyDictionary<string, JsonElement> byName, IReadOnlyDictionary<string, ToolTarget> targets, Stopwatch age, bool failed, IReadOnlySet<string>? harmlessToRepeat = null)
             {
+                HarmlessToRepeat = harmlessToRepeat ?? new HashSet<string>(StringComparer.Ordinal);
                 ByName = byName;
                 Targets = targets;
                 Age = age;
@@ -354,6 +370,9 @@ namespace com.RedPand.MCP.Plugin.Server.Tools
             }
 
             public IReadOnlyDictionary<string, JsonElement> ByName { get; }
+
+            /// <summary>Tools that may be sent again after a disconnect even if they already ran.</summary>
+            public IReadOnlySet<string> HarmlessToRepeat { get; }
 
             /// <summary>Every listed tool and its <see cref="ToolTarget"/>.</summary>
             public IReadOnlyDictionary<string, ToolTarget> Targets { get; }

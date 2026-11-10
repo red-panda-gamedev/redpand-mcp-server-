@@ -347,6 +347,43 @@ namespace com.RedPand.MCP.Plugin.Server.Tests
             }
         }
 
+        [Theory]
+        [InlineData(true, null, null)]
+        [InlineData(false, true, false)]
+        public async Task HarmlessCallDroppedAfterSending_IsSentAgain(bool readOnly, bool? idempotent, bool? destructive)
+        {
+            await using var host = await NoneAuthMcpHost.StartAsync();
+            using var client = new ToolCallClient(host);
+            var reload = new Reload(client);
+            await using var editor = client.Plugin("editor", "Godot 4.5", onCall: async (plugin, request) =>
+            {
+                reload.Start(plugin, TimeSpan.Zero);
+                await Task.Delay(Timeout.Infinite, plugin.Disposed);
+                return FakeEnginePlugin.Success(request, "never");
+            });
+            editor.Tools = editor.Tools.Append(new ResponseListTool
+            {
+                Name = "peek",
+                ReadOnlyHint = readOnly,
+                IdempotentHint = idempotent,
+                DestructiveHint = destructive,
+                InputSchema = System.Text.Json.JsonDocument.Parse("{\"type\":\"object\"}").RootElement.Clone(),
+            }).ToArray();
+            await editor.StartAsync();
+
+            try
+            {
+                var (status, body) = await client.RestAsync("peek", "{}").WaitAsync(TimeSpan.FromSeconds(30));
+                status.ShouldBe(200, body?.ToJsonString());
+                editor.Calls.Count.ShouldBe(1);
+                (await reload.PluginAsync()).Calls.Count.ShouldBe(1);
+            }
+            finally
+            {
+                await reload.DisposeAsync();
+            }
+        }
+
         [Fact]
         public async Task CallDroppedAfterSending_IsNotResent_AndSaysThePluginIsBack()
         {
