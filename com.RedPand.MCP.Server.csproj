@@ -10,7 +10,7 @@
 
     <!-- Released as executables (GitHub Releases) and a Docker image (GHCR), not as a NuGet package. -->
     <IsPackable>false</IsPackable>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <Authors>RedPand</Authors>
     <Company>RedPand</Company>
     <!-- Based on GameDev-MCP-Server and MCP-Plugin-dotnet, Copyright (c) Ivan Murzak, Apache License 2.0 (LICENSE, lib/NOTICE). -->
