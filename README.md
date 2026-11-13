@@ -115,6 +115,10 @@ Push a tag `v<version>` matching the `<Version>` in `com.RedPand.MCP.Server.cspr
 `.github/workflows/release.yml` then runs the tests and publishes the 7 zips with `SHA256SUMS` on the GitHub
 Release and the image `ghcr.io/red-panda-gamedev/redpand-mcp-server:<version>`.
 
+## Security
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## License
 
 [Apache-2.0](LICENSE). Based on [GameDev-MCP-Server](https://github.com/IvanMurzak/GameDev-MCP-Server) and
