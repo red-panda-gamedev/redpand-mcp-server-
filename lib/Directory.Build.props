@@ -1,10 +1,17 @@
 <Project>
 
-  <!-- Intentionally empty. Previously pinned v8 Microsoft.Extensions / System.Text.Json
-       packages to work around a v8/v10 conflict introduced by ModelContextProtocol 1.2.0.
-       The MCP dependency has been removed from McpPlugin and McpPlugin.Common (the
-       compiled DLLs never referenced MCP types), so transitive resolution is now
-       coherent: SignalR.Client 8.0.15 pulls the v8 stack naturally, and
-       McpPlugin.Server keeps its own v10 stack via SignalR.Client 10.0.3. -->
+  <!-- Fail restore on any known-vulnerable package (direct or transitive) at moderate or above
+       (NU1902 moderate, NU1903 high, NU1904 critical): the same gate as the server project. -->
+  <PropertyGroup>
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <NuGetAuditLevel>moderate</NuGetAuditLevel>
+    <WarningsAsErrors>$(WarningsAsErrors);NU1902;NU1903;NU1904</WarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Transitive resolution: SignalR.Client 8.0.33 pulls the v8 stack for McpPlugin and
+       McpPlugin.Common (netstandard2.1, the same version the Unity plugin bundles), and
+       McpPlugin.Server keeps its own v10 stack via SignalR.Client 10.0.14. Both are at or
+       above the GHSA-334f-vvp4-7g6p / CVE-2026-70159 fix (8.0.32, 10.0.13). -->
 
 </Project>
