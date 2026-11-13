@@ -386,6 +386,8 @@ namespace com.RedPand.MCP.Plugin
             _logger.LogDebug("{method} completed.", nameof(Dispose));
         }
 
-        ~McpPlugin() => Dispose();
+        // No finalizer: the plugin owns no unmanaged handle, and Dispose logs and tears down the hub connection, objects
+        // the finalizer thread may meet half-collected. In Unity a finalizer that ran Dispose during the Mono cleanup at
+        // exit logged through the console from that thread and crashed the Editor (boehm-gc `type < HANDLE_TYPE_MAX`).
     }
 }
