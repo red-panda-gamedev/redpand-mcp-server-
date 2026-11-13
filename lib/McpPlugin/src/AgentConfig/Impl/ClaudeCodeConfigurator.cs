@@ -29,6 +29,22 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
 
         private static string LocalConfigPath(AgentConfiguratorSettings s) => Path.Combine(s.ProjectRootPath, ".mcp.json");
 
+        /// <summary>
+        /// The bearer written when the server takes no token. Claude Code's <c>/mcp</c> offers "Authenticate" (an OAuth
+        /// sign-in) on every HTTP server whose entry has no <c>Authorization</c> header, and this server has no OAuth; with
+        /// a header Claude Code uses it as the credential and never falls back to OAuth. A server in the <c>none</c> mode
+        /// ignores it; in the <c>token</c> mode the real token is written instead.
+        /// </summary>
+        public const string NoAuthBearer = "none";
+
+        static string HttpBearer(AgentConfiguratorSettings settings, HttpCredentialMode credentialMode)
+            => credentialMode == HttpCredentialMode.AccessToken && !string.IsNullOrEmpty(settings.HttpBearerToken)
+                ? settings.HttpBearerToken!
+                : NoAuthBearer;
+
+        protected override void ApplyHttpAuthorization(AiAgentConfig config, AgentConfiguratorSettings settings, HttpCredentialMode credentialMode)
+            => config.ApplyHttpAuthorization(isRequired: true, token: HttpBearer(settings, credentialMode));
+
         protected override AiAgentConfig CreateStdioConfig(AgentConfiguratorSettings settings, ILogger? logger)
             => new JsonAiAgentConfig(AgentName, LocalConfigPath(settings), bodyPath: "mcpServers", logger: logger)
                 .SetProperty("command", JsonValue.Create(settings.ExecutableFullPath.Replace('\\', '/'))!, requiredForConfiguration: true, comparison: ValueComparisonMode.Path)
@@ -69,9 +85,9 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Impl
                 };
             }
 
-            // The manual command must match what Configure writes: a bearer header only when the written
-            // config carries one (Cloud project key, local token mode). A Cloud OAuth config is URL-only.
-            var authHeader = settings.WritesHttpBearer ? $" --header \"Authorization: Bearer {settings.HttpBearerToken}\"" : string.Empty;
+            // The manual command must match what Configure writes: the local token in token mode, else the
+            // no-auth bearer that keeps Claude Code from offering an OAuth sign-in.
+            var authHeader = $" --header \"Authorization: Bearer {HttpBearer(settings, settings.ResolveHttpCredentialMode())}\"";
             // B8: the displayed "manual" command must use the SAME pinned URL that Configure writes into
             // .mcp.json (settings.PinnedHttpUrl, i.e. .../mcp/p/<pin>), not the bare unpinned host — an
             // unpinned URL only routes when the account has a single instance.

@@ -79,6 +79,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                 c.SupportsOAuth.ShouldBeTrue($"{c.AgentId} should default SupportsOAuth=true");
         }
 
+        static string WithoutNoAuthBearer(string content) => content.Replace($"Bearer {ClaudeCodeConfigurator.NoAuthBearer}", string.Empty);
+
         // ---- DoD 1: per-configurator snapshot of the new default (OAuth) shapes — credential-free + pinned. ----
 
         [Fact]
@@ -96,7 +98,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
 
                     content.ShouldContain($"/p/{settings.ProjectPin}", customMessage: $"{c.AgentId} HTTP must carry the pin path segment");
                     content.ShouldNotContain(PatValue, customMessage: $"{c.AgentId} HTTP must not embed the token value");
-                    content.ShouldNotContain("Bearer", customMessage: $"{c.AgentId} HTTP must not embed a Bearer header");
+                    // Claude Code's no-auth bearer is no credential: it only keeps /mcp from offering an OAuth sign-in.
+                    WithoutNoAuthBearer(content).ShouldNotContain("Bearer", customMessage: $"{c.AgentId} HTTP must not embed a Bearer header");
                     content.ShouldNotContain("bearer_token_env_var", customMessage: $"{c.AgentId} HTTP must not carry the PAT env-var indirection on the default path");
                 }
             }
@@ -177,7 +180,8 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                 var http = c.GetHttpConfig(settings).ExpectedFileContent;
                 http.ShouldContain($"\"url\": \"http://localhost:50000/mcp/p/{pin}\"");
                 http.ShouldContain("\"type\": \"http\"");
-                http.ShouldNotContain("\"headers\"");
+                // Without an Authorization header Claude Code's /mcp offers an OAuth sign-in this server does not have.
+                http.ShouldContain($"\"Authorization\": \"Bearer {ClaudeCodeConfigurator.NoAuthBearer}\"");
             }
             finally { Directory.Delete(root, recursive: true); }
         }
@@ -672,7 +676,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
                         var onDisk = File.ReadAllText(config.ConfigPath);
 
                         onDisk.ShouldNotContain(PatValue, customMessage: $"{c.AgentId}/{transport} leaked the token value into a project file");
-                        onDisk.ShouldNotContain("Bearer", customMessage: $"{c.AgentId}/{transport} leaked a Bearer header into a project file");
+                        WithoutNoAuthBearer(onDisk).ShouldNotContain("Bearer", customMessage: $"{c.AgentId}/{transport} leaked a Bearer header into a project file");
                         onDisk.ShouldNotContain($"{Consts.MCP.Server.Args.Token}=", customMessage: $"{c.AgentId}/{transport} leaked a token arg into a project file");
                         assertedAtLeastOne = true;
                     }
