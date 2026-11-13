@@ -49,7 +49,7 @@ namespace com.RedPand.MCP.Plugin.AgentConfig.Tests
             var item = section.Items.ShouldHaveSingleItem();
             item.Kind.ShouldBe(ConfigurationItemKind.Alert);
             item.Text.ShouldContain("stdio");
-            item.Text.ShouldContain("Cloud");
+            item.Text.ShouldNotContain("Cloud", Case.Sensitive); // the hosted Cloud mode is gone: no advice to switch to it
         }
 
         [Fact]
